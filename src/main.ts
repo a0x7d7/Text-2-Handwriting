@@ -15,7 +15,7 @@ const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
   <main class="shell">
     <header>
-      <h1>Text → Handwriting</h1>
+      <h1>Text 2 Handwriting</h1>
     </header>
     <section class="workspace">
       <div class="editor panel">
@@ -34,7 +34,7 @@ This is a handwriting sample generated with Longhand. Type anything you want in 
         </div>
         <div class="actions">
           <button id="generate" class="primary" disabled>Generate pages</button>
-          <button id="repair" disabled>Repair mode: off</button>
+          <button id="repair" type="button" aria-pressed="false" disabled>Repair mode</button>
           <button id="download" disabled>Download all pages (.zip)</button>
         </div>
         <div id="generation-progress" class="generation-progress" hidden>
@@ -303,7 +303,7 @@ generateButton.addEventListener("click", async () => {
     });
     pages = generated;
     currentPage = 0; nextPatchId = 1; repairMode = false; selecting = false;
-    repairButton.textContent = "Repair mode: off"; overlay.classList.remove("repair-active");
+    repairButton.setAttribute("aria-pressed", "false"); overlay.classList.remove("repair-active");
     pageStage.hidden = false; placeholder.hidden = true; renderCurrentPage();
     setStatus("");
   } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
@@ -312,7 +312,7 @@ generateButton.addEventListener("click", async () => {
 repairButton.addEventListener("click", () => {
   if (!pages.length) return;
   repairMode = !repairMode; overlay.classList.toggle("repair-active", repairMode);
-  repairButton.textContent = repairMode ? "Repair mode: on" : "Repair mode: off";
+  repairButton.setAttribute("aria-pressed", String(repairMode));
   setStatus(repairMode ? `Drag a box around the faulty area on page ${currentPage + 1}.` : "Repair mode off.");
 });
 prevButton.addEventListener("click", () => { if (currentPage > 0) { currentPage--; selecting = false; renderCurrentPage(); } });
