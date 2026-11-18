@@ -24,15 +24,13 @@ Open the local address printed by Vite, usually `http://localhost:5173/`.
 1. Type or paste text in the left box.
 2. Choose a handwriting style and ink colour.
 3. Adjust **Text size**. Smaller values make the handwriting smaller and allow more characters per line; larger values make it bigger and wrap sooner. Line breaks are calculated from the measured handwriting width, not a fixed character count.
-4. Optionally turn on **Speed mode** for word-by-word generation and live word spacing, line spacing, and underhang controls. **Correction mode** appears when Speed mode is on and asks Gemini to check each generated word image once.
+4. Select text and use **A− / A+** to adjust its local size. The **Text size** slider scales the whole document; word and line spacing adjust the layout. **Correction mode** asks Gemini to check each generated word image once.
 5. Click **Generate pages**. A percentage progress bar reports generation progress. Text automatically continues onto additional A4 pages when the current page runs out of vertical space.
-6. Use **Previous** and **Next** to inspect pages.
-7. To repair a page, enable **Repair mode**, drag a rectangle around the faulty area on the currently displayed page, and enter replacement text. The rectangle only defines what gets erased; the replacement is generated at the selected document text size, not squeezed into the rectangle.
-8. Drag the normally sized replacement to reposition it. Repairs are kept separately for each page.
-9. Use **− / +** to zoom the page preview independently, or **Fit** to return to the fitted view.
-10. Click **Download all pages (.zip)**. The ZIP contains one full-resolution PNG per page, including repairs.
+6. Drag any word in the preview to move it. Click a word to confirm whether you want to regenerate it; the new image keeps the word's text and position.
+7. Use **Previous** and **Next** to inspect pages, and **− / +** or **Fit** to adjust the preview zoom.
+8. Click **Download all pages (.zip)**. The ZIP contains one full-resolution PNG per page with all word changes applied.
 
-The selection rectangle is painted over with the paper colour. Each replacement is a separate generated handwriting run; it may not connect naturally to adjacent cursive letters. Re-generating clears all pages and repairs.
+Regenerating a word creates a separate handwriting run; it may not connect naturally to adjacent cursive letters. Generating new pages replaces the current document.
 
 ## Notes
 
