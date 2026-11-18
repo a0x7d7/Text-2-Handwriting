@@ -66,7 +66,7 @@ This is a handwriting sample generated with Longhand. Type anything you want in 
         </div>
       </div>
     </section>
-    <footer>You can support me at <a href="https://buymeacoffee.com/cofei" target="_blank" rel="noopener noreferrer">buymeacoffee.com/cofei</a></footer>
+    <footer>you can support me at <a href="https://buymeacoffee.com/cofei" target="_blank" rel="noopener noreferrer">buymeacoffee.com/cofei</a></footer>
   </main>`;
 
 const $ = <T extends Element>(selector: string) => document.querySelector<T>(selector)!;
