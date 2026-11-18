@@ -10,7 +10,9 @@ const MARGIN_X = 112;
 const MARGIN_TOP = 70;
 const MARGIN_BOTTOM = 65;
 const PAPER = "#fffefb";
+const BASE_INK = "#000000";
 const app = document.querySelector<HTMLDivElement>("#app")!;
+const yieldToBrowser = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 app.innerHTML = `
   <main class="shell">
@@ -19,6 +21,12 @@ app.innerHTML = `
     </header>
     <section class="workspace">
       <div class="editor panel">
+        <div class="mode-toolbar"><button id="speed-mode" type="button" aria-pressed="false">Speed mode</button><button id="correction-mode" type="button" aria-pressed="false" hidden>Correction mode</button></div>
+        <div id="speed-settings" class="speed-settings" hidden>
+          <div><label for="word-spacing">Word spacing <output id="word-spacing-value">16 px</output></label><input id="word-spacing" type="range" min="0" max="48" step="1" value="16"></div>
+          <div><label for="line-spacing">Line spacing <output id="line-spacing-value">28 px</output></label><input id="line-spacing" type="range" min="0" max="72" step="1" value="28"></div>
+          <div><label for="underhang-correction">Underhang correction <output id="underhang-correction-value">0 px</output></label><input id="underhang-correction" type="range" min="0" max="40" step="1" value="0"></div>
+        </div>
         <label for="text">Your text</label>
         <textarea id="text" spellcheck="false">The quick brown fox jumps over the lazy dog.
 
@@ -38,8 +46,8 @@ This is a handwriting sample generated with Longhand. Type anything you want in 
           <button id="download" disabled>Download all pages (.zip)</button>
         </div>
         <div id="generation-progress" class="generation-progress" hidden>
+          <div class="progress-heading"><span class="progress-label">Progress</span><span id="progress-percent">0%</span></div>
           <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
-          <span id="progress-percent">0%</span>
         </div>
         <p id="status" class="status" aria-live="polite"></p>
       </div>
@@ -58,13 +66,23 @@ This is a handwriting sample generated with Longhand. Type anything you want in 
         </div>
       </div>
     </section>
-    <footer>Runs in your browser. Text and generated pages are not sent to a generation server.</footer>
+    <footer>Text and page generation stay in your browser.<span id="correction-note" hidden> Correction Mode sends individual word images to Gemini for checking.</span></footer>
   </main>`;
 
 const $ = <T extends Element>(selector: string) => document.querySelector<T>(selector)!;
 const textArea = $("#text") as HTMLTextAreaElement;
 const styleSelect = $("#style") as HTMLSelectElement;
 const inkSelect = $("#ink") as HTMLSelectElement;
+const speedModeButton = $("#speed-mode") as HTMLButtonElement;
+const correctionModeButton = $("#correction-mode") as HTMLButtonElement;
+const correctionNote = $("#correction-note") as HTMLSpanElement;
+const speedSettings = $("#speed-settings") as HTMLDivElement;
+const wordSpacing = $("#word-spacing") as HTMLInputElement;
+const wordSpacingValue = $("#word-spacing-value") as HTMLOutputElement;
+const lineSpacing = $("#line-spacing") as HTMLInputElement;
+const lineSpacingValue = $("#line-spacing-value") as HTMLOutputElement;
+const underhangCorrection = $("#underhang-correction") as HTMLInputElement;
+const underhangCorrectionValue = $("#underhang-correction-value") as HTMLOutputElement;
 const textSize = $("#text-size") as HTMLInputElement;
 const textSizeValue = $("#text-size-value") as HTMLOutputElement;
 const generateButton = $("#generate") as HTMLButtonElement;
@@ -94,8 +112,13 @@ interface RepairPatch {
   offsetX: number; offsetY: number; body: string;
 }
 interface PageDocument { svg: string; patches: RepairPatch[] }
+interface SpeedWord { width: number; height: number; body: string; paragraphEnd: boolean; hasUnderhang: boolean }
 let model: CalligrapherModel | null = null;
 let pages: PageDocument[] = [];
+let speedWords: SpeedWord[] | null = null;
+let speedTextSize = 1;
+let speedMode = false;
+let correctionMode = false;
 let currentPage = 0;
 let currentPngUrl = "";
 let repairMode = false;
@@ -127,7 +150,11 @@ function innerSvg(svgText: string): { width: number; height: number; body: strin
   const parsed = new DOMParser().parseFromString(svgText, "image/svg+xml"); const root = parsed.documentElement;
   if (root.tagName.toLowerCase() !== "svg" || parsed.querySelector("parsererror")) throw new Error("The renderer returned invalid SVG.");
   const nums = (root.getAttribute("viewBox") ?? "0 0 1 1").trim().split(/\s+/).map(Number);
-  return { width: nums[2] || 1, height: nums[3] || 1, body: [...root.childNodes].map((node) => new XMLSerializer().serializeToString(node)).join("") };
+  const inheritedPaint = ["fill", "stroke", "stroke-linecap", "stroke-linejoin"].map((name) => {
+    const value = root.getAttribute(name); return value === null ? "" : ` ${name}="${value}"`;
+  }).join("");
+  const body = [...root.childNodes].map((node) => new XMLSerializer().serializeToString(node)).join("");
+  return { width: nums[2] || 1, height: nums[3] || 1, body: `<g${inheritedPaint}>${body}</g>` };
 }
 async function loadModel(): Promise<CalligrapherModel> {
   const response = await fetch(weightsUrl); if (!response.ok) throw new Error(`Could not load model weights (HTTP ${response.status}).`);
@@ -137,7 +164,6 @@ async function buildPages(
   activeModel: CalligrapherModel,
   input: string,
   style: number,
-  ink: string,
   size: number,
   onProgress: (percent: number, message: string) => void,
 ): Promise<PageDocument[]> {
@@ -157,7 +183,7 @@ async function buildPages(
   const measureWidth = (text: string, lineSeed: number) => {
     const offsets = activeModel.write(text, { bias: 0.6, style, seed: lineSeed });
     const line = alignLine(offsetsToLine(offsets));
-    const svg = lineToSvg(line, { renderer: "ribbon", scale: 1, padding: 2, ink, ribbonWidth: 1.35 });
+    const svg = lineToSvg(line, { renderer: "ribbon", scale: 1, padding: 2, ink: BASE_INK, ribbonWidth: 1.35 });
     return innerSvg(svg).width;
   };
 
@@ -179,8 +205,8 @@ async function buildPages(
       processedWords++;
       const percent = Math.min(65, Math.round(processedWords / totalWords * 65));
       onProgress(percent, `Laying out text · ${processedWords} of ${totalWords} words`);
-      // Yield so the browser can paint the progress indicator between model calls.
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      // Timer yields continue in hidden tabs; batching avoids one throttled timer per word.
+      if (processedWords % 8 === 0) await yieldToBrowser();
       lineSeed++;
     }
     if (currentLine) rows.push({ text: currentLine, paragraphGap: false });
@@ -208,10 +234,10 @@ async function buildPages(
     }
     const offsets = activeModel.write(row.text, { bias: 0.6, style, seed: seed + renderedLines });
     const line = alignLine(offsetsToLine(offsets));
-    const raw = lineToSvg(line, { renderer: "ribbon", scale: 1, padding: 2, ink, ribbonWidth: 1.35 });
+    const raw = lineToSvg(line, { renderer: "ribbon", scale: 1, padding: 2, ink: BASE_INK, ribbonWidth: 1.35 });
     const rawLayout = innerSvg(raw);
     const scale = Math.min(size, availableW / rawLayout.width);
-    const rendered = lineToSvg(line, { renderer: "ribbon", scale, padding: 2, ink, ribbonWidth: 1.35 * scale });
+    const rendered = lineToSvg(line, { renderer: "ribbon", scale, padding: 2, ink: BASE_INK, ribbonWidth: 1.35 * scale });
     const layout = innerSvg(rendered);
     const gap = row.paragraphGap ? 10 * size : 0;
     const lineHeight = layout.height + 8 * size + gap;
@@ -221,33 +247,140 @@ async function buildPages(
     y += layout.height + 8 * size;
     renderedLines++;
     onProgress(65 + Math.round(renderedLines / Math.max(1, lineRows) * 35), `Rendering handwriting · ${renderedLines} of ${lineRows} lines`);
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    if (renderedLines % 4 === 0) await yieldToBrowser();
   }
   if (elements.length || output.length === 0) finishPage();
   onProgress(100, `Finished · ${output.length} page${output.length === 1 ? "" : "s"}`);
   return output;
 }
+async function buildSpeedWords(
+  activeModel: CalligrapherModel,
+  input: string,
+  style: number,
+  correctWords: boolean,
+  onProgress: (percent: number, message: string) => void,
+): Promise<SpeedWord[]> {
+  const cleaned = normalizeText(input, activeModel);
+  if (!cleaned) throw new Error("Enter some text first.");
+  const paragraphs = cleaned.split(/\n+/).map((paragraph) => paragraph.trim()).filter(Boolean);
+  const total = paragraphs.reduce((sum, paragraph) => sum + paragraph.split(/\s+/).length, 0);
+  const output: SpeedWord[] = [];
+  const seed = Math.floor(Math.random() * 1_000_000);
+  let completed = 0;
+  for (const paragraph of paragraphs) {
+    const words = paragraph.split(/\s+/);
+    for (let index = 0; index < words.length; index++) {
+      let layout: ReturnType<typeof innerSvg> | null = null;
+      const maxAttempts = correctWords ? 5 : 1;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const offsets = activeModel.write(words[index], { bias: 0.6, style, seed: seed + completed * 5 + attempt });
+        const line = alignLine(offsetsToLine(offsets));
+        layout = innerSvg(lineToSvg(line, { renderer: "ribbon", scale: 1, padding: 2, ink: BASE_INK, ribbonWidth: 1.35 }));
+        if (!correctWords) break;
+        const recognized = await recognizeWordImage(await wordImageDataUrl(layout));
+        if (normalizeRecognizedWord(recognized) === normalizeRecognizedWord(words[index]) || attempt === maxAttempts - 1) break;
+        onProgress(Math.round((completed + (attempt + 1) / maxAttempts) / total * 88), `Retrying word ${completed + 1} of ${total} · try ${attempt + 2} of ${maxAttempts}`);
+      }
+      if (!layout) throw new Error("Could not generate a word image.");
+      output.push({
+        width: layout.width, height: layout.height, body: layout.body,
+        paragraphEnd: index === words.length - 1, hasUnderhang: /[gjpqy]/.test(words[index]),
+      });
+      completed++;
+      onProgress(Math.round(completed / total * 88), `${correctWords ? "Checking" : "Drawing"} words · ${completed} of ${total}`);
+      if (completed % 8 === 0) await yieldToBrowser();
+    }
+  }
+  onProgress(90, "Placing words on pages...");
+  return output;
+}
+async function wordImageDataUrl(layout: { width: number; height: number; body: string }): Promise<string> {
+  const scale = 2;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.ceil(layout.width * scale)}" height="${Math.ceil(layout.height * scale)}" viewBox="0 0 ${layout.width} ${layout.height}"><rect width="100%" height="100%" fill="#ffffff"/>${layout.body}</svg>`;
+  const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
+  try {
+    const image = new Image(); image.src = url; await image.decode();
+    const canvas = document.createElement("canvas"); canvas.width = Math.ceil(layout.width * scale); canvas.height = Math.ceil(layout.height * scale);
+    const context = canvas.getContext("2d"); if (!context) throw new Error("Could not prepare a word image for checking.");
+    context.fillStyle = "#fff"; context.fillRect(0, 0, canvas.width, canvas.height); context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/png");
+  } finally { URL.revokeObjectURL(url); }
+}
+async function recognizeWordImage(image: string): Promise<string> {
+  const response = await fetch("/api/verify-word", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image }) });
+  const result = await response.json() as { text?: string; error?: string };
+  if (!response.ok) throw new Error(result.error || `Word checking failed (HTTP ${response.status}).`);
+  return result.text ?? "";
+}
+function normalizeRecognizedWord(word: string): string { return word.toLocaleLowerCase().replace(/[^a-z0-9]/g, ""); }
+function composeSpeedPages(words: SpeedWord[], size: number, wordGap: number, lineGap: number, underhangShift: number): PageDocument[] {
+  const availableW = PAGE_W - MARGIN_X - 60;
+  const bottomY = PAGE_H - MARGIN_BOTTOM;
+  type PlacedWord = { word: SpeedWord; x: number; scale: number; width: number; height: number };
+  const rows: Array<{ words: PlacedWord[]; height: number }> = [];
+  let row: { words: PlacedWord[]; height: number } = { words: [], height: 0 };
+  let x = 0;
+  const finishRow = () => {
+    if (row.words.length) rows.push(row);
+    row = { words: [], height: 0 }; x = 0;
+  };
+  for (const word of words) {
+    const scale = Math.min(size, availableW / word.width);
+    const width = word.width * scale;
+    const height = word.height * scale;
+    const gap = row.words.length ? Math.max(0, wordGap * size) : 0;
+    if (row.words.length && x + gap + width > availableW) finishRow();
+    const actualGap = row.words.length ? Math.max(0, wordGap * size) : 0;
+    x += actualGap;
+    row.words.push({ word, x, scale, width, height });
+    row.height = Math.max(row.height, height);
+    x += width;
+    if (word.paragraphEnd) finishRow();
+  }
+  finishRow();
+
+  const output: PageDocument[] = [];
+  let elements: string[] = [];
+  let y = MARGIN_TOP;
+  const finishPage = () => output.push({ svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_W}" height="${PAGE_H}" viewBox="0 0 ${PAGE_W} ${PAGE_H}"><rect width="100%" height="100%" fill="${PAPER}"/>${elements.join("\n")}</svg>`, patches: [] });
+  for (const line of rows) {
+    const lineHeight = line.height + lineGap;
+    if (y + lineHeight > bottomY && elements.length) { finishPage(); elements = []; y = MARGIN_TOP; }
+    for (const placed of line.words) {
+      const top = y + (line.height - placed.height) + (placed.word.hasUnderhang ? underhangShift * size : 0);
+      elements.push(`<svg x="${(MARGIN_X + placed.x).toFixed(1)}" y="${top.toFixed(1)}" width="${placed.width.toFixed(1)}" height="${placed.height.toFixed(1)}" viewBox="0 0 ${placed.word.width} ${placed.word.height}" overflow="visible">${placed.word.body}</svg>`);
+    }
+    y += lineHeight;
+  }
+  if (elements.length || output.length === 0) finishPage();
+  return output;
+}
+function recolor(markup: string): string { return markup.replaceAll(BASE_INK, inkSelect.value); }
 function svgPoint(event: PointerEvent) {
   const rect = overlay.getBoundingClientRect();
   return { x: Math.max(0, Math.min(PAGE_W, (event.clientX - rect.left) * PAGE_W / rect.width)), y: Math.max(0, Math.min(PAGE_H, (event.clientY - rect.top) * PAGE_H / rect.height)) };
 }
 function renderOverlay() {
   const patches = pages[currentPage]?.patches ?? [];
-  const markup = patches.map((patch) => `<rect x="${patch.erase.x}" y="${patch.erase.y}" width="${patch.erase.width}" height="${patch.erase.height}" fill="${PAPER}"/><g data-patch-id="${patch.id}" class="repair-patch" transform="translate(${patch.x + patch.offsetX} ${patch.y + patch.offsetY}) scale(${patch.scale})"><svg width="${patch.width}" height="${patch.height}" viewBox="0 0 ${patch.width} ${patch.height}" overflow="visible">${patch.body}</svg><rect x="0" y="0" width="${patch.width}" height="${patch.height}" fill="transparent"/></g>`).join("");
+  const markup = patches.map((patch) => `${eraseMarkup(patch)}<g data-patch-id="${patch.id}" class="repair-patch" transform="translate(${patch.x + patch.offsetX} ${patch.y + patch.offsetY}) scale(${patch.scale})"><svg width="${patch.width}" height="${patch.height}" viewBox="0 0 ${patch.width} ${patch.height}" overflow="visible">${patch.body}</svg><rect x="0" y="0" width="${patch.width}" height="${patch.height}" fill="transparent"/></g>`).join("");
   const selection = selecting ? `<rect class="selection-box" x="${Math.min(selectionStart.x, selectionNow.x)}" y="${Math.min(selectionStart.y, selectionNow.y)}" width="${Math.abs(selectionNow.x - selectionStart.x)}" height="${Math.abs(selectionNow.y - selectionStart.y)}"/>` : "";
-  overlay.innerHTML = markup + selection;
+  overlay.innerHTML = recolor(markup) + selection;
+}
+function eraseMarkup(patch: RepairPatch): string {
+  const { x, y, width, height } = patch.erase;
+  return `<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="${PAPER}"/>`;
 }
 function finalSvg(page: PageDocument): string {
   const parsed = new DOMParser().parseFromString(page.svg, "image/svg+xml"); const root = parsed.documentElement;
-  const markup = page.patches.map((patch) => `<rect x="${patch.erase.x}" y="${patch.erase.y}" width="${patch.erase.width}" height="${patch.erase.height}" fill="${PAPER}"/><g transform="translate(${patch.x + patch.offsetX} ${patch.y + patch.offsetY}) scale(${patch.scale})"><svg width="${patch.width}" height="${patch.height}" viewBox="0 0 ${patch.width} ${patch.height}" overflow="visible">${patch.body}</svg></g>`).join("");
+  const markup = page.patches.map((patch) => `${eraseMarkup(patch)}<g transform="translate(${patch.x + patch.offsetX} ${patch.y + patch.offsetY}) scale(${patch.scale})"><svg width="${patch.width}" height="${patch.height}" viewBox="0 0 ${patch.width} ${patch.height}" overflow="visible">${patch.body}</svg></g>`).join("");
   const overlayDoc = new DOMParser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${markup}</svg>`, "image/svg+xml");
   for (const child of [...overlayDoc.documentElement.childNodes]) root.appendChild(parsed.importNode(child, true));
-  return new XMLSerializer().serializeToString(root);
+  return recolor(new XMLSerializer().serializeToString(root));
 }
 function renderCurrentPage() {
   if (!pages.length) return;
   if (currentPngUrl) URL.revokeObjectURL(currentPngUrl);
-  currentPngUrl = URL.createObjectURL(new Blob([pages[currentPage].svg], { type: "image/svg+xml;charset=utf-8" }));
+  currentPngUrl = URL.createObjectURL(new Blob([recolor(pages[currentPage].svg)], { type: "image/svg+xml;charset=utf-8" }));
   preview.src = currentPngUrl; renderOverlay();
   pageNumber.textContent = `Page ${currentPage + 1} of ${pages.length}`;
   pageInfo.textContent = `A4 · ${pages.length} page${pages.length === 1 ? "" : "s"}`;
@@ -292,22 +425,64 @@ function makeZip(files: Array<{ name: string; data: Uint8Array }>): Blob {
 }
 
 textSize.addEventListener("input", () => { textSizeValue.value = `${textSize.value}%`; textSizeValue.textContent = `${textSize.value}%`; });
+function updateSpacingOutputs() {
+  wordSpacingValue.value = `${wordSpacing.value} px`; wordSpacingValue.textContent = `${wordSpacing.value} px`;
+  lineSpacingValue.value = `${lineSpacing.value} px`; lineSpacingValue.textContent = `${lineSpacing.value} px`;
+  underhangCorrectionValue.value = `${underhangCorrection.value} px`; underhangCorrectionValue.textContent = `${underhangCorrection.value} px`;
+}
+function reflowSpeedPages() {
+  if (!speedWords) return;
+  const previousPage = currentPage;
+  const oldPatches = pages.map((page) => page.patches);
+  pages = composeSpeedPages(speedWords, speedTextSize, Number(wordSpacing.value), Number(lineSpacing.value), Number(underhangCorrection.value));
+  pages.forEach((page, index) => { page.patches = oldPatches[index] ?? []; });
+  currentPage = Math.min(previousPage, pages.length - 1);
+  renderCurrentPage();
+}
+speedModeButton.addEventListener("click", () => {
+  speedMode = !speedMode;
+  speedModeButton.setAttribute("aria-pressed", String(speedMode));
+  speedSettings.hidden = !speedMode;
+  correctionModeButton.hidden = !speedMode;
+  if (!speedMode) {
+    correctionMode = false;
+    correctionModeButton.setAttribute("aria-pressed", "false");
+    correctionNote.hidden = true;
+  }
+});
+correctionModeButton.addEventListener("click", () => {
+  correctionMode = !correctionMode;
+  correctionModeButton.setAttribute("aria-pressed", String(correctionMode));
+  correctionNote.hidden = !correctionMode;
+});
+wordSpacing.addEventListener("input", () => { updateSpacingOutputs(); reflowSpeedPages(); });
+lineSpacing.addEventListener("input", () => { updateSpacingOutputs(); reflowSpeedPages(); });
+underhangCorrection.addEventListener("input", () => { updateSpacingOutputs(); reflowSpeedPages(); });
+inkSelect.addEventListener("change", () => { if (pages.length) renderCurrentPage(); });
 generateButton.addEventListener("click", async () => {
   if (!model) return;
   generateButton.disabled = true; repairButton.disabled = true; downloadButton.disabled = true;
+  speedModeButton.disabled = true; wordSpacing.disabled = true; lineSpacing.disabled = true; underhangCorrection.disabled = true;
   generationProgress.hidden = false; progressFill.style.width = "0%"; progressPercent.textContent = "0%";
   setStatus("Starting generation...");
   try {
-    const generated = await buildPages(model, textArea.value, Number(styleSelect.value), inkSelect.value, Number(textSize.value) / 100, (percent, message) => {
-      progressFill.style.width = `${percent}%`; progressPercent.textContent = `${percent}%`; setStatus(message);
-    });
-    pages = generated;
+    const report = (percent: number, message: string) => { progressFill.style.width = `${percent}%`; progressPercent.textContent = `${percent}%`; setStatus(message); };
+    if (speedMode) {
+      speedWords = await buildSpeedWords(model, textArea.value, Number(styleSelect.value), correctionMode, report);
+      speedTextSize = Number(textSize.value) / 100;
+      pages = composeSpeedPages(speedWords, speedTextSize, Number(wordSpacing.value), Number(lineSpacing.value), Number(underhangCorrection.value));
+      report(100, `Finished · ${pages.length} page${pages.length === 1 ? "" : "s"}`);
+    } else {
+      const generated = await buildPages(model, textArea.value, Number(styleSelect.value), Number(textSize.value) / 100, report);
+      speedWords = null;
+      pages = generated;
+    }
     currentPage = 0; nextPatchId = 1; repairMode = false; selecting = false;
     repairButton.setAttribute("aria-pressed", "false"); overlay.classList.remove("repair-active");
     pageStage.hidden = false; placeholder.hidden = true; renderCurrentPage();
     setStatus("");
   } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
-  finally { generateButton.disabled = false; repairButton.disabled = pages.length === 0; downloadButton.disabled = pages.length === 0; }
+  finally { generateButton.disabled = false; speedModeButton.disabled = false; wordSpacing.disabled = false; lineSpacing.disabled = false; underhangCorrection.disabled = false; repairButton.disabled = pages.length === 0; downloadButton.disabled = pages.length === 0; }
 });
 repairButton.addEventListener("click", () => {
   if (!pages.length) return;
@@ -339,7 +514,7 @@ async function makeRepair(selection: { x: number; y: number; width: number; heig
   try {
     const offsets = model.write(replacement, { bias: 0.6, style: Number(styleSelect.value), seed: Math.floor(Math.random() * 1_000_000) });
     const line = alignLine(offsetsToLine(offsets));
-    const rendered = lineToSvg(line, { renderer: "ribbon", scale: 1, padding: 2, ink: inkSelect.value, ribbonWidth: 1.35 }); const layout = innerSvg(rendered);
+    const rendered = lineToSvg(line, { renderer: "ribbon", scale: 1, padding: 2, ink: BASE_INK, ribbonWidth: 1.35 }); const layout = innerSvg(rendered);
     // The highlighted rectangle is only the erase mask. Replacement handwriting
     // uses the same text-size setting as normal page generation, not the box dimensions.
     const scale = Number(textSize.value) / 100;
