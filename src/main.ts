@@ -66,7 +66,7 @@ This is a handwriting sample generated with Longhand. Type anything you want in 
         </div>
       </div>
     </section>
-    <footer>Text and page generation stay in your browser.<span id="correction-note" hidden> Correction Mode sends individual word images to Gemini for checking.</span></footer>
+    <footer>You can support me at <a href="https://buymeacoffee.com/cofei" target="_blank" rel="noopener noreferrer">buymeacoffee.com/cofei</a></footer>
   </main>`;
 
 const $ = <T extends Element>(selector: string) => document.querySelector<T>(selector)!;
@@ -75,7 +75,6 @@ const styleSelect = $("#style") as HTMLSelectElement;
 const inkSelect = $("#ink") as HTMLSelectElement;
 const speedModeButton = $("#speed-mode") as HTMLButtonElement;
 const correctionModeButton = $("#correction-mode") as HTMLButtonElement;
-const correctionNote = $("#correction-note") as HTMLSpanElement;
 const speedSettings = $("#speed-settings") as HTMLDivElement;
 const wordSpacing = $("#word-spacing") as HTMLInputElement;
 const wordSpacingValue = $("#word-spacing-value") as HTMLOutputElement;
@@ -271,15 +270,12 @@ async function buildSpeedWords(
     const words = paragraph.split(/\s+/);
     for (let index = 0; index < words.length; index++) {
       let layout: ReturnType<typeof innerSvg> | null = null;
-      const maxAttempts = correctWords ? 5 : 1;
-      for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        const offsets = activeModel.write(words[index], { bias: 0.6, style, seed: seed + completed * 5 + attempt });
-        const line = alignLine(offsetsToLine(offsets));
-        layout = innerSvg(lineToSvg(line, { renderer: "ribbon", scale: 1, padding: 2, ink: BASE_INK, ribbonWidth: 1.35 }));
-        if (!correctWords) break;
-        const recognized = await recognizeWordImage(await wordImageDataUrl(layout));
-        if (normalizeRecognizedWord(recognized) === normalizeRecognizedWord(words[index]) || attempt === maxAttempts - 1) break;
-        onProgress(Math.round((completed + (attempt + 1) / maxAttempts) / total * 88), `Retrying word ${completed + 1} of ${total} · try ${attempt + 2} of ${maxAttempts}`);
+      const offsets = activeModel.write(words[index], { bias: 0.6, style, seed: seed + completed });
+      const line = alignLine(offsetsToLine(offsets));
+      layout = innerSvg(lineToSvg(line, { renderer: "ribbon", scale: 1, padding: 2, ink: BASE_INK, ribbonWidth: 1.35 }));
+      if (correctWords) {
+        onProgress(Math.round(completed / total * 88), `Checking word ${completed + 1} of ${total}`);
+        await recognizeWordImage(await wordImageDataUrl(layout));
       }
       if (!layout) throw new Error("Could not generate a word image.");
       output.push({
@@ -447,13 +443,11 @@ speedModeButton.addEventListener("click", () => {
   if (!speedMode) {
     correctionMode = false;
     correctionModeButton.setAttribute("aria-pressed", "false");
-    correctionNote.hidden = true;
   }
 });
 correctionModeButton.addEventListener("click", () => {
   correctionMode = !correctionMode;
   correctionModeButton.setAttribute("aria-pressed", String(correctionMode));
-  correctionNote.hidden = !correctionMode;
 });
 wordSpacing.addEventListener("input", () => { updateSpacingOutputs(); reflowSpeedPages(); });
 lineSpacing.addEventListener("input", () => { updateSpacingOutputs(); reflowSpeedPages(); });
