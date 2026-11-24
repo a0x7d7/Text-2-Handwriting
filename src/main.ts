@@ -752,7 +752,8 @@ preview.addEventListener("pointerup", () => {
 preview.addEventListener("pointercancel", () => { dragState = null; resizeState = null; renderOverlay(); });
 document.addEventListener("pointerdown", (event) => {
   const target = event.target as Node;
-  if (selectedWordIds.size && !preview.contains(target) && !regenerateButton.contains(target)) {
+  const clickedInsidePreview = event.composedPath().includes(preview);
+  if (selectedWordIds.size && !clickedInsidePreview && !regenerateButton.contains(target)) {
     selectedWordIds.clear();
     if (pages.length) renderOverlay();
   }
