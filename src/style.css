@@ -50,8 +50,8 @@ button:hover:not(:disabled) { transform: translateY(-2px) rotate(-1deg); box-sha
 button:active:not(:disabled) { transform: translateY(1px); box-shadow: 0 1px 0 #b7b49d; }
 button.primary { background: #526b9d; color: white; border-color: #40577f; box-shadow: 0 3px 0 #40577f; }
 button.primary:hover:not(:disabled) { box-shadow: 0 5px 0 #40577f; }
-#correction-mode[aria-pressed="true"] { background: #526b9d; color: #fff; border-color: #40577f; box-shadow: 0 3px 0 #40577f; }
-#correction-mode[aria-pressed="true"]:hover:not(:disabled) { box-shadow: 0 5px 0 #40577f; }
+#correction-mode[aria-pressed="true"], #pair-mode[aria-pressed="true"] { background: #526b9d; color: #fff; border-color: #40577f; box-shadow: 0 3px 0 #40577f; }
+#correction-mode[aria-pressed="true"]:hover:not(:disabled), #pair-mode[aria-pressed="true"]:hover:not(:disabled) { box-shadow: 0 5px 0 #40577f; }
 button:disabled { opacity: .48; cursor: not-allowed; box-shadow: none; }
 .status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .preview-head { display: flex; justify-content: space-between; color: #596a76; font-size: 10px; font-weight: 800; letter-spacing: .12em; margin: 2px 3px 14px; }
@@ -66,6 +66,10 @@ button:disabled { opacity: .48; cursor: not-allowed; box-shadow: none; }
 .page-stage > svg { display: block; width: 100%; height: auto; touch-action: none; }
 .page-stage .word-hit { pointer-events: all; cursor: grab; }
 .page-stage .word-hit:active { cursor: grabbing; }
+.page-stage .selected-word, .page-stage .word-selection { fill: none; stroke: #526b9d; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
+.page-stage .resize-handle { fill: #fffef8; stroke: #526b9d; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: all; }
+.page-stage .resize-handle[data-resize-handle="nw"], .page-stage .resize-handle[data-resize-handle="se"] { cursor: nwse-resize; }
+.page-stage .resize-handle[data-resize-handle="ne"], .page-stage .resize-handle[data-resize-handle="sw"] { cursor: nesw-resize; }
 .placeholder { position: absolute; top: 45%; padding: 0 20px; color: #708092; font-size: 13px; text-align: center; }
 .placeholder[hidden] { display: none; }
 .generation-progress { display: block; margin-top: 14px; }

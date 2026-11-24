@@ -24,11 +24,13 @@ Open the local address printed by Vite, usually `http://localhost:5173/`.
 1. Type or paste text in the left box.
 2. Choose a handwriting style and ink colour.
 3. Adjust **Text size**. Smaller values make the handwriting smaller and allow more characters per line; larger values make it bigger and wrap sooner. Line breaks are calculated from the measured handwriting width, not a fixed character count.
-4. Select text and use **A− / A+** to adjust its local size. The **Text size** slider scales the whole document; word and line spacing adjust the layout. **Correction mode** asks Gemini to check each generated word image once.
+4. **Pair mode** groups isolated single letters with a neighboring word before generation. Select text and use **A− / A+** to adjust its local size. The **Text size** slider scales the whole document; word and line spacing adjust the layout. **Correction mode** asks Gemini to check each generated word image once.
 5. Click **Generate pages**. A percentage progress bar reports generation progress. Text automatically continues onto additional A4 pages when the current page runs out of vertical space.
-6. Drag any word in the preview to move it. Click a word to confirm whether you want to regenerate it; the new image keeps the word's text and position.
+6. Click a word or pair to select it. Hold **Shift** and click to select more. Use **Regenerate** or **Ctrl+R** to redraw the selection; drag it to move it or use a corner handle to resize it.
 7. Use **Previous** and **Next** to inspect pages, and **− / +** or **Fit** to adjust the preview zoom.
 8. Click **Download all pages (.zip)**. The ZIP contains one full-resolution PNG per page with all word changes applied.
+
+Use **Ctrl+Z** to undo and **Ctrl+Y** or **Ctrl+Shift+Z** to redo page changes.
 
 Regenerating a word creates a separate handwriting run; it may not connect naturally to adjacent cursive letters. Generating new pages replaces the current document.
 

@@ -21,7 +21,7 @@ app.innerHTML = `
     </header>
     <section class="workspace">
       <div class="editor panel">
-        <div class="mode-toolbar"><button id="correction-mode" type="button" aria-pressed="false">Correction mode</button></div>
+        <div class="mode-toolbar"><button id="pair-mode" type="button" aria-pressed="true">Pair mode</button><button id="correction-mode" type="button" aria-pressed="false">Correction mode</button></div>
         <div id="speed-settings" class="speed-settings">
           <div><label for="word-spacing">Word spacing <output id="word-spacing-value">16 px</output></label><input id="word-spacing" type="range" min="0" max="48" step="1" value="16"></div>
           <div><label for="line-spacing">Line spacing <output id="line-spacing-value">28 px</output></label><input id="line-spacing" type="range" min="0" max="72" step="1" value="28"></div>
@@ -41,6 +41,7 @@ This is a handwriting sample generated with Longhand. Type anything you want in 
         </div>
         <div class="actions">
           <button id="generate" class="primary" disabled>Generate pages</button>
+          <button id="regenerate" type="button" title="Regenerate selected word or pair (Ctrl+R)" disabled>Regenerate</button>
           <button id="download" disabled>Download all pages (.zip)</button>
         </div>
         <div id="generation-progress" class="generation-progress" hidden>
@@ -71,6 +72,7 @@ const textArea = $("#text") as HTMLDivElement;
 const styleSelect = $("#style") as HTMLSelectElement;
 const inkSelect = $("#ink") as HTMLSelectElement;
 const correctionModeButton = $("#correction-mode") as HTMLButtonElement;
+const pairModeButton = $("#pair-mode") as HTMLButtonElement;
 const wordSpacing = $("#word-spacing") as HTMLInputElement;
 const wordSpacingValue = $("#word-spacing-value") as HTMLOutputElement;
 const lineSpacing = $("#line-spacing") as HTMLInputElement;
@@ -80,6 +82,7 @@ const sizeUpButton = $("#size-up") as HTMLButtonElement;
 const textSize = $("#text-size") as HTMLInputElement;
 const textSizeValue = $("#text-size-value") as HTMLOutputElement;
 const generateButton = $("#generate") as HTMLButtonElement;
+const regenerateButton = $("#regenerate") as HTMLButtonElement;
 const downloadButton = $("#download") as HTMLButtonElement;
 const prevButton = $("#prev-page") as HTMLButtonElement;
 const nextButton = $("#next-page") as HTMLButtonElement;
@@ -98,20 +101,24 @@ const zoomInButton = $("#zoom-in") as HTMLButtonElement;
 const zoomFitButton = $("#zoom-fit") as HTMLButtonElement;
 const zoomLevel = $("#zoom-level") as HTMLSpanElement;
 
-interface SpeedWord { id: number; text: string; style: number; width: number; height: number; baseline: number; body: string; paragraphEnd: boolean; localScale: number; offsetX: number; offsetY: number }
+interface SpeedWord { id: number; text: string; style: number; width: number; height: number; baseline: number; body: string; paragraphEnd: boolean; localScale: number; postScale: number; offsetX: number; offsetY: number }
 interface PlacedWord { word: SpeedWord; x: number; y: number; width: number; height: number; scale: number }
 interface PageDocument { svg: string; words: PlacedWord[] }
+interface DocumentSnapshot { speedWords: SpeedWord[] | null; pages: PageDocument[]; currentPage: number; selectedWordIds: number[]; textSize: string; wordSpacing: string; lineSpacing: string; ink: string }
 let model: CalligrapherModel | null = null;
 let pages: PageDocument[] = [];
 let speedWords: SpeedWord[] | null = null;
 let speedTextSize = 1;
 let correctionMode = false;
+let pairMode = true;
+let lastInk = inkSelect.value;
 let currentPage = 0;
-let dragWordId: number | null = null;
-let dragOffset = { x: 0, y: 0 };
-let dragStart = { x: 0, y: 0 };
-let didDrag = false;
+let selectedWordIds = new Set<number>();
+let dragState: { startX: number; startY: number; items: Array<{ id: number; offsetX: number; offsetY: number }>; before: DocumentSnapshot; changed: boolean } | null = null;
+let resizeState: { handle: string; startX: number; startY: number; bounds: { left: number; top: number; right: number; bottom: number }; items: Array<{ id: number; left: number; top: number; width: number; height: number; scale: number; postScale: number }>; before: DocumentSnapshot; changed: boolean } | null = null;
 let nextWordId = 1;
+const undoStack: DocumentSnapshot[] = [];
+const redoStack: DocumentSnapshot[] = [];
 let pageZoom = 1;
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.5;
@@ -125,6 +132,51 @@ function applyPageZoom() {
 }
 
 function setStatus(message: string) { status.textContent = message; }
+function copyDocumentGraph(words: SpeedWord[] | null, sourcePages: PageDocument[]) {
+  const wordCopies = new Map<number, SpeedWord>();
+  for (const word of words ?? []) wordCopies.set(word.id, { ...word });
+  for (const page of sourcePages) for (const placed of page.words) if (!wordCopies.has(placed.word.id)) wordCopies.set(placed.word.id, { ...placed.word });
+  return {
+    speedWords: words?.map((word) => wordCopies.get(word.id)!) ?? null,
+    pages: sourcePages.map((page) => ({ svg: page.svg, words: page.words.map((placed) => ({ ...placed, word: wordCopies.get(placed.word.id)! })) })),
+  };
+}
+function captureDocument(): DocumentSnapshot {
+  const graph = copyDocumentGraph(speedWords, pages);
+  return {
+    ...graph, currentPage, selectedWordIds: [...selectedWordIds],
+    textSize: textSize.value, wordSpacing: wordSpacing.value, lineSpacing: lineSpacing.value, ink: inkSelect.value,
+  };
+}
+function pushUndo(snapshot: DocumentSnapshot) {
+  undoStack.push(snapshot);
+  if (undoStack.length > 50) undoStack.shift();
+  redoStack.length = 0;
+}
+function restoreDocument(snapshot: DocumentSnapshot) {
+  const graph = copyDocumentGraph(snapshot.speedWords, snapshot.pages);
+  speedWords = graph.speedWords; pages = graph.pages;
+  currentPage = Math.min(snapshot.currentPage, Math.max(0, pages.length - 1));
+  selectedWordIds = new Set(snapshot.selectedWordIds);
+  textSize.value = snapshot.textSize; wordSpacing.value = snapshot.wordSpacing; lineSpacing.value = snapshot.lineSpacing;
+  inkSelect.value = snapshot.ink; lastInk = snapshot.ink;
+  speedTextSize = Number(textSize.value) / 100;
+  textSizeValue.value = `${textSize.value}%`; textSizeValue.textContent = `${textSize.value}%`;
+  updateSpacingOutputs();
+  if (pages.length) { pageStage.hidden = false; placeholder.hidden = true; renderCurrentPage(); } else {
+    regenerateButton.disabled = true; downloadButton.disabled = true; prevButton.disabled = true; nextButton.disabled = true;
+    pageNumber.textContent = "Page 0 of 0"; pageInfo.textContent = "No pages yet";
+    pageStage.hidden = true; placeholder.hidden = false; applyPageZoom();
+  }
+}
+function undoDocument() {
+  const previous = undoStack.pop(); if (!previous) return;
+  redoStack.push(captureDocument()); restoreDocument(previous);
+}
+function redoDocument() {
+  const next = redoStack.pop(); if (!next) return;
+  undoStack.push(captureDocument()); restoreDocument(next);
+}
 function readEditorText(): { text: string; scales: number[]; editorScales: number[] } {
   let text = ""; const scales: number[] = []; const editorScales: number[] = [];
   const walker = document.createTreeWalker(textArea, NodeFilter.SHOW_TEXT);
@@ -133,10 +185,10 @@ function readEditorText(): { text: string; scales: number[]; editorScales: numbe
     const value = node.nodeValue ?? "";
     let scale = 1; let editorScale = 1; let foundScale = false; let foundEditorScale = false; let parent = node.parentElement;
     while (parent && parent !== textArea && (!foundScale || !foundEditorScale)) {
-      const markedScale = parent.getAttribute("data-local-scale");
-      if (markedScale !== null) { scale = Number(markedScale) || 1; foundScale = true; }
-      const markedEditorScale = parent.getAttribute("data-editor-scale");
-      if (markedEditorScale !== null) { editorScale = Number(markedEditorScale) || 1; foundEditorScale = true; }
+      const localLevel = parent.getAttribute("data-local-level");
+      if (localLevel !== null) { scale = 1 + 0.2 * Number(localLevel); foundScale = true; }
+      const editorLevel = parent.getAttribute("data-editor-level");
+      if (editorLevel !== null) { editorScale = 1 + 0.1 * Number(editorLevel); foundEditorScale = true; }
       parent = parent.parentElement;
     }
     text += value;
@@ -150,7 +202,7 @@ function textOffsetAt(node: Node, offset: number): number {
 }
 function unwrapScaleMarkers(node: Node) {
   for (const child of Array.from(node.childNodes)) {
-    if (child instanceof HTMLElement && child.hasAttribute("data-local-scale")) {
+    if (child instanceof HTMLElement && child.hasAttribute("data-local-level")) {
       child.replaceWith(...Array.from(child.childNodes));
     } else unwrapScaleMarkers(child);
   }
@@ -279,6 +331,7 @@ async function buildSpeedWords(
   input: string,
   inputScales: number[],
   style: number,
+  groupSingles: boolean,
   correctWords: boolean,
   onProgress: (percent: number, message: string) => void,
 ): Promise<SpeedWord[]> {
@@ -294,25 +347,53 @@ async function buildSpeedWords(
     const next = tokens[index + 1];
     tokens[index].paragraphEnd = !next || input.slice(tokens[index].end, next.start).includes("\n");
   }
-  const total = tokens.length;
+  const groups: Array<(typeof tokens)[number] & { partCount: number }> = [];
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index];
+    const next = tokens[index + 1];
+    if (groupSingles && /^[^A-Za-z0-9]*[A-Za-z][^A-Za-z0-9]*$/.test(token.text)) {
+      if (next && !input.slice(token.end, next.start).includes("\n")) {
+        const textLength = token.text.length + next.text.length;
+        groups.push({
+          ...token, text: `${token.text} ${next.text}`, end: next.end,
+          localScale: (token.localScale * token.text.length + next.localScale * next.text.length) / textLength,
+          paragraphEnd: next.paragraphEnd, partCount: 2,
+        });
+        index++;
+        continue;
+      }
+      const previous = groups.at(-1);
+      if (previous?.partCount === 1 && !input.slice(previous.end, token.start).includes("\n")) {
+        const textLength = previous.text.length + token.text.length;
+        groups[groups.length - 1] = {
+          ...previous, text: `${previous.text} ${token.text}`, end: token.end,
+          localScale: (previous.localScale * previous.text.length + token.localScale * token.text.length) / textLength,
+          paragraphEnd: token.paragraphEnd, partCount: 2,
+        };
+        continue;
+      }
+    }
+    groups.push({ ...token, partCount: 1 });
+  }
+  const total = groups.length;
   const output: SpeedWord[] = [];
   const seed = Math.floor(Math.random() * 1_000_000);
   let completed = 0;
-  for (const token of tokens) {
+  for (const token of groups) {
     const offsets = activeModel.write(token.text, { bias: 0.6, style, seed: seed + completed });
     const line = alignLine(offsetsToLine(offsets));
     const layout = innerSvg(lineToSvg(line, { renderer: "ribbon", scale: 1, padding: 2, ink: BASE_INK, ribbonWidth: 1.35 }));
     const baseline = Math.max(0, Math.min(layout.height, baselineInSvg(line)));
     if (correctWords) {
-      onProgress(Math.round(completed / total * 88), `Checking word ${completed + 1} of ${total}`);
+      onProgress(Math.round(completed / total * 88), `Checking word group ${completed + 1} of ${total}`);
       await recognizeWordImage(await wordImageDataUrl(layout));
     }
     output.push({
       id: nextWordId++, text: token.text, style, width: layout.width, height: layout.height, baseline, body: layout.body,
-      paragraphEnd: token.paragraphEnd, localScale: token.localScale, offsetX: 0, offsetY: 0,
+      paragraphEnd: token.paragraphEnd, localScale: token.localScale, postScale: 1, offsetX: 0, offsetY: 0,
     });
     completed++;
-    onProgress(Math.round(completed / total * 88), `${correctWords ? "Checking" : "Drawing"} words · ${completed} of ${total}`);
+    onProgress(Math.round(completed / total * 88), `${correctWords ? "Checking" : "Drawing"} word groups · ${completed} of ${total}`);
     if (completed % 8 === 0) await yieldToBrowser();
   }
   onProgress(90, "Placing words on pages...");
@@ -348,7 +429,7 @@ function composeSpeedPages(words: SpeedWord[], size: number, wordGap: number, li
     row = { words: [], ascent: 0, descent: 0, height: 0 }; x = 0;
   };
   for (const word of words) {
-    const scale = Math.min(size * word.localScale, availableW / word.width);
+    const scale = Math.min(size * word.localScale * word.postScale, availableW / word.width);
     const width = word.width * scale;
     const height = word.height * scale;
     const gap = row.words.length ? Math.max(0, wordGap * size) : 0;
@@ -398,11 +479,21 @@ function serializePage(page: PageDocument, hitTargets = false): string {
     const hit = hitTargets ? `<rect class="word-hit" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${placed.width.toFixed(1)}" height="${placed.height.toFixed(1)}" fill="transparent"/>` : "";
     return `<g${hitTargets ? ` data-word-id="${word.id}"` : ""}>${ink}${hit}</g>`;
   }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_W}" height="${PAGE_H}" viewBox="0 0 ${PAGE_W} ${PAGE_H}"><rect width="100%" height="100%" fill="${PAPER}"/>${words}</svg>`;
+  const selected = hitTargets ? page.words.filter((placed) => selectedWordIds.has(placed.word.id)) : [];
+  const selection = selected.length ? (() => {
+    const boxes = selected.map((placed) => ({ left: placed.x + placed.word.offsetX, top: placed.y + placed.word.offsetY, right: placed.x + placed.word.offsetX + placed.width, bottom: placed.y + placed.word.offsetY + placed.height }));
+    const left = Math.min(...boxes.map((box) => box.left)); const top = Math.min(...boxes.map((box) => box.top));
+    const right = Math.max(...boxes.map((box) => box.right)); const bottom = Math.max(...boxes.map((box) => box.bottom));
+    const wordBoxes = selected.map((placed) => `<rect class="selected-word" x="${(placed.x + placed.word.offsetX).toFixed(1)}" y="${(placed.y + placed.word.offsetY).toFixed(1)}" width="${placed.width.toFixed(1)}" height="${placed.height.toFixed(1)}"/>`).join("");
+    const handle = (name: string, x: number, y: number) => `<rect class="resize-handle" data-resize-handle="${name}" x="${(x - 4).toFixed(1)}" y="${(y - 4).toFixed(1)}" width="8" height="8" rx="2"/>`;
+    return `${wordBoxes}<rect class="word-selection" x="${left.toFixed(1)}" y="${top.toFixed(1)}" width="${(right - left).toFixed(1)}" height="${(bottom - top).toFixed(1)}"/>${handle("nw", left, top)}${handle("ne", right, top)}${handle("sw", left, bottom)}${handle("se", right, bottom)}`;
+  })() : "";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_W}" height="${PAGE_H}" viewBox="0 0 ${PAGE_W} ${PAGE_H}"><rect width="100%" height="100%" fill="${PAPER}"/>${words}${selection}</svg>`;
 }
 function renderOverlay() {
   const page = pages[currentPage];
   if (!page) return;
+  regenerateButton.disabled = !page.words.some((placed) => selectedWordIds.has(placed.word.id));
   page.svg = recolor(serializePage(page));
   const content = serializePage(page, true).replace(/^<svg[^>]*>/, "").replace(/<\/svg>$/, "");
   preview.innerHTML = recolor(content);
@@ -457,6 +548,17 @@ textSize.addEventListener("input", () => {
   textSizeValue.value = `${textSize.value}%`; textSizeValue.textContent = `${textSize.value}%`;
   if (speedWords) { speedTextSize = Number(textSize.value) / 100; reflowSpeedPages(); }
 });
+function trackRangeHistory(input: HTMLInputElement) {
+  let before: DocumentSnapshot | null = null;
+  const begin = () => { if (!before) before = captureDocument(); };
+  input.addEventListener("pointerdown", begin);
+  input.addEventListener("keydown", (event) => { if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(event.key)) begin(); });
+  input.addEventListener("change", () => {
+    if (before && (before.textSize !== textSize.value || before.wordSpacing !== wordSpacing.value || before.lineSpacing !== lineSpacing.value)) pushUndo(before);
+    before = null;
+  });
+}
+trackRangeHistory(textSize); trackRangeHistory(wordSpacing); trackRangeHistory(lineSpacing);
 function adjustSelectedTextSize(amount: number) {
   const selection = window.getSelection();
   if (!selection?.rangeCount || !textArea.contains(selection.anchorNode)) return;
@@ -469,10 +571,13 @@ function adjustSelectedTextSize(amount: number) {
   const selectedEditorScales = editorScales.slice(start, end);
   const currentScale = selectedScales.length ? selectedScales.reduce((sum, value) => sum + value, 0) / selectedScales.length : 1;
   const currentEditorScale = selectedEditorScales.length ? selectedEditorScales.reduce((sum, value) => sum + value, 0) / selectedEditorScales.length : 1;
-  const newScale = Math.max(0.5, Math.min(2, Math.round((currentScale + amount) * 10) / 10));
-  const newEditorScale = Math.max(0.5, Math.min(2, Math.round((currentEditorScale + amount / 2) * 10) / 10));
+  const levelChange = Math.sign(amount);
+  const localLevel = Math.max(-4, Math.min(4, Math.round((currentScale - 1) / 0.2) + levelChange));
+  const editorLevel = Math.max(-4, Math.min(4, Math.round((currentEditorScale - 1) / 0.1) + levelChange));
   const fragment = range.extractContents(); unwrapScaleMarkers(fragment);
-  const marker = document.createElement("span"); marker.dataset.localScale = String(newScale); marker.dataset.editorScale = String(newEditorScale); marker.style.fontSize = `${newEditorScale * 100}%`;
+  const marker = document.createElement("span");
+  marker.dataset.localLevel = String(localLevel); marker.dataset.editorLevel = String(editorLevel);
+  marker.style.fontSize = `${100 + editorLevel * 10}%`;
   marker.append(fragment); range.insertNode(marker);
   selection.removeAllRanges(); const updatedRange = document.createRange(); updatedRange.selectNodeContents(marker); selection.addRange(updatedRange);
 }
@@ -504,78 +609,154 @@ function reflowSpeedPages() {
   if (!speedWords) return;
   const previousPage = currentPage;
   pages = composeSpeedPages(speedWords, speedTextSize, Number(wordSpacing.value), Number(lineSpacing.value));
-  currentPage = Math.min(previousPage, pages.length - 1);
+  const selectedPage = pages.findIndex((page) => page.words.some((placed) => selectedWordIds.has(placed.word.id)));
+  currentPage = selectedPage >= 0 ? selectedPage : Math.min(previousPage, pages.length - 1);
+  const visibleIds = new Set(pages[currentPage]?.words.map((placed) => placed.word.id) ?? []);
+  selectedWordIds = new Set([...selectedWordIds].filter((id) => visibleIds.has(id)));
   renderCurrentPage();
 }
+pairModeButton.addEventListener("click", () => {
+  pairMode = !pairMode;
+  pairModeButton.setAttribute("aria-pressed", String(pairMode));
+});
 correctionModeButton.addEventListener("click", () => {
   correctionMode = !correctionMode;
   correctionModeButton.setAttribute("aria-pressed", String(correctionMode));
 });
 wordSpacing.addEventListener("input", () => { updateSpacingOutputs(); reflowSpeedPages(); });
 lineSpacing.addEventListener("input", () => { updateSpacingOutputs(); reflowSpeedPages(); });
-inkSelect.addEventListener("change", () => { if (pages.length) renderCurrentPage(); });
+inkSelect.addEventListener("change", () => {
+  if (lastInk !== inkSelect.value) { const before = captureDocument(); before.ink = lastInk; pushUndo(before); lastInk = inkSelect.value; }
+  if (pages.length) renderCurrentPage();
+});
 generateButton.addEventListener("click", async () => {
   if (!model) return;
-  generateButton.disabled = true; downloadButton.disabled = true;
-  correctionModeButton.disabled = true; wordSpacing.disabled = true; lineSpacing.disabled = true; sizeDownButton.disabled = true; sizeUpButton.disabled = true;
+  const beforeGeneration = captureDocument();
+  generateButton.disabled = true; regenerateButton.disabled = true; downloadButton.disabled = true;
+  pairModeButton.disabled = true; correctionModeButton.disabled = true; wordSpacing.disabled = true; lineSpacing.disabled = true; sizeDownButton.disabled = true; sizeUpButton.disabled = true;
   generationProgress.hidden = false; progressFill.style.width = "0%"; progressPercent.textContent = "0%";
   setStatus("Starting generation...");
   try {
     const report = (percent: number, message: string) => { progressFill.style.width = `${percent}%`; progressPercent.textContent = `${percent}%`; setStatus(message); };
     const editor = readEditorText();
-    speedWords = await buildSpeedWords(model, editor.text, editor.scales, Number(styleSelect.value), correctionMode, report);
+    speedWords = await buildSpeedWords(model, editor.text, editor.scales, Number(styleSelect.value), pairMode, correctionMode, report);
     speedTextSize = Number(textSize.value) / 100;
     pages = composeSpeedPages(speedWords, speedTextSize, Number(wordSpacing.value), Number(lineSpacing.value));
+    pushUndo(beforeGeneration);
     report(100, `Finished · ${pages.length} page${pages.length === 1 ? "" : "s"}`);
-    currentPage = 0;
+    currentPage = 0; selectedWordIds.clear();
     pageStage.hidden = false; placeholder.hidden = true; renderCurrentPage();
     setStatus("");
   } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
-  finally { generateButton.disabled = false; correctionModeButton.disabled = false; wordSpacing.disabled = false; lineSpacing.disabled = false; sizeDownButton.disabled = false; sizeUpButton.disabled = false; downloadButton.disabled = pages.length === 0; }
+  finally {
+    generateButton.disabled = false; pairModeButton.disabled = false; correctionModeButton.disabled = false;
+    wordSpacing.disabled = false; lineSpacing.disabled = false; sizeDownButton.disabled = false; sizeUpButton.disabled = false;
+    regenerateButton.disabled = !pages[currentPage]?.words.some((placed) => selectedWordIds.has(placed.word.id));
+    downloadButton.disabled = pages.length === 0;
+  }
 });
-prevButton.addEventListener("click", () => { if (currentPage > 0) { currentPage--; renderCurrentPage(); } });
-nextButton.addEventListener("click", () => { if (currentPage < pages.length - 1) { currentPage++; renderCurrentPage(); } });
+prevButton.addEventListener("click", () => { if (currentPage > 0) { currentPage--; selectedWordIds.clear(); renderCurrentPage(); } });
+nextButton.addEventListener("click", () => { if (currentPage < pages.length - 1) { currentPage++; selectedWordIds.clear(); renderCurrentPage(); } });
 preview.addEventListener("pointerdown", (event) => {
+  const resizeHandle = (event.target as Element).closest<SVGRectElement>("[data-resize-handle]");
   const target = (event.target as Element).closest<SVGGElement>("[data-word-id]");
-  if (!target) return;
-  const placed = pages[currentPage]?.words.find((item) => item.word.id === Number(target.dataset.wordId));
-  if (!placed) return;
+  if (!resizeHandle && !target) { selectedWordIds.clear(); renderOverlay(); return; }
   const point = svgPoint(event);
-  dragWordId = placed.word.id; didDrag = false; dragStart = point;
-  dragOffset = { x: point.x - placed.x - placed.word.offsetX, y: point.y - placed.y - placed.word.offsetY };
-  preview.setPointerCapture(event.pointerId); event.preventDefault();
+  if (resizeHandle) {
+    const selected = pages[currentPage]?.words.filter((placed) => selectedWordIds.has(placed.word.id)) ?? [];
+    if (!selected.length) return;
+    const items = selected.map((placed) => ({ id: placed.word.id, left: placed.x + placed.word.offsetX, top: placed.y + placed.word.offsetY, width: placed.width, height: placed.height, scale: placed.scale, postScale: placed.word.postScale }));
+    resizeState = {
+      handle: resizeHandle.dataset.resizeHandle ?? "se", startX: point.x, startY: point.y,
+      bounds: { left: Math.min(...items.map((item) => item.left)), top: Math.min(...items.map((item) => item.top)), right: Math.max(...items.map((item) => item.left + item.width)), bottom: Math.max(...items.map((item) => item.top + item.height)) },
+      items, before: captureDocument(), changed: false,
+    };
+    preview.setPointerCapture(event.pointerId); event.preventDefault(); return;
+  }
+  const wordId = Number(target!.dataset.wordId);
+  if (event.shiftKey) {
+    if (selectedWordIds.has(wordId)) selectedWordIds.delete(wordId); else selectedWordIds.add(wordId);
+    renderOverlay(); event.preventDefault(); return;
+  }
+  if (!selectedWordIds.has(wordId)) selectedWordIds = new Set([wordId]);
+  const selected = pages[currentPage]?.words.filter((placed) => selectedWordIds.has(placed.word.id)) ?? [];
+  dragState = { startX: point.x, startY: point.y, items: selected.map((placed) => ({ id: placed.word.id, offsetX: placed.word.offsetX, offsetY: placed.word.offsetY })), before: captureDocument(), changed: false };
+  preview.setPointerCapture(event.pointerId); event.preventDefault(); renderOverlay();
 });
 preview.addEventListener("pointermove", (event) => {
-  if (dragWordId === null) return;
-  const placed = pages[currentPage]?.words.find((item) => item.word.id === dragWordId);
-  if (!placed) return;
+  if (resizeState) {
+    const point = svgPoint(event); const dx = point.x - resizeState.startX; const dy = point.y - resizeState.startY;
+    if (Math.hypot(dx, dy) <= 2) return;
+    if (!resizeState.changed) { pushUndo(resizeState.before); resizeState.changed = true; }
+    const bounds = resizeState.bounds;
+    const growsLeft = resizeState.handle.includes("w"); const growsTop = resizeState.handle.includes("n");
+    const groupWidth = bounds.right - bounds.left; const groupHeight = bounds.bottom - bounds.top;
+    const factor = Math.max(0.25, 1 + Math.max((growsLeft ? -dx : dx) / groupWidth, (growsTop ? -dy : dy) / groupHeight));
+    const anchorX = growsLeft ? bounds.right : bounds.left; const anchorY = growsTop ? bounds.bottom : bounds.top;
+    for (const item of resizeState.items) {
+      const placed = pages[currentPage]?.words.find((current) => current.word.id === item.id);
+      if (!placed) continue;
+      const left = anchorX + (item.left - anchorX) * factor; const top = anchorY + (item.top - anchorY) * factor;
+      placed.width = item.width * factor; placed.height = item.height * factor; placed.scale = item.scale * factor;
+      placed.word.postScale = item.postScale * factor;
+      placed.word.offsetX = left - placed.x; placed.word.offsetY = top - placed.y;
+    }
+    renderOverlay(); return;
+  }
+  if (!dragState) return;
   const point = svgPoint(event);
-  if (Math.hypot(point.x - dragStart.x, point.y - dragStart.y) > 2) didDrag = true;
-  if (!didDrag) return;
-  placed.word.offsetX = point.x - placed.x - dragOffset.x;
-  placed.word.offsetY = point.y - placed.y - dragOffset.y;
+  const dx = point.x - dragState.startX; const dy = point.y - dragState.startY;
+  if (Math.hypot(dx, dy) <= 2) return;
+  if (!dragState.changed) { pushUndo(dragState.before); dragState.changed = true; }
+  for (const item of dragState.items) {
+    const placed = pages[currentPage]?.words.find((current) => current.word.id === item.id);
+    if (placed) { placed.word.offsetX = item.offsetX + dx; placed.word.offsetY = item.offsetY + dy; }
+  }
   renderOverlay();
 });
-async function regenerateWord(wordId: number) {
+async function regenerateSelectedWords() {
   if (!model) return;
-  const placed = pages[currentPage]?.words.find((item) => item.word.id === wordId);
-  if (!placed || !window.confirm("Do you wanna regenerate this word?")) return;
+  const selected = pages[currentPage]?.words.filter((placed) => selectedWordIds.has(placed.word.id)) ?? [];
+  if (!selected.length) return;
+  const before = captureDocument(); let changed = false;
   try {
-    setStatus(`Regenerating “${placed.word.text}”...`);
-    const offsets = model.write(placed.word.text, { bias: 0.6, style: placed.word.style, seed: Math.floor(Math.random() * 1_000_000) });
-    const line = alignLine(offsetsToLine(offsets));
-    const layout = innerSvg(lineToSvg(line, { renderer: "ribbon", scale: 1, padding: 2, ink: BASE_INK, ribbonWidth: 1.35 }));
-    if (correctionMode) await recognizeWordImage(await wordImageDataUrl(layout));
-    placed.word.width = layout.width; placed.word.height = layout.height; placed.word.baseline = Math.max(0, Math.min(layout.height, baselineInSvg(line))); placed.word.body = layout.body;
+    regenerateButton.disabled = true;
+    setStatus(`Regenerating ${selected.length} word${selected.length === 1 ? "" : " groups"}...`);
+    for (const placed of selected) {
+      const offsets = model.write(placed.word.text, { bias: 0.6, style: placed.word.style, seed: Math.floor(Math.random() * 1_000_000) });
+      const line = alignLine(offsetsToLine(offsets));
+      const layout = innerSvg(lineToSvg(line, { renderer: "ribbon", scale: 1, padding: 2, ink: BASE_INK, ribbonWidth: 1.35 }));
+      if (correctionMode) await recognizeWordImage(await wordImageDataUrl(layout));
+      placed.word.width = layout.width; placed.word.height = layout.height; placed.word.baseline = Math.max(0, Math.min(layout.height, baselineInSvg(line))); placed.word.body = layout.body;
+      changed = true;
+    }
+    if (changed) pushUndo(before);
     renderOverlay(); setStatus("");
-  } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
+  } catch (error) {
+    if (changed) pushUndo(before);
+    renderOverlay(); setStatus(error instanceof Error ? error.message : String(error));
+  }
+  finally { regenerateButton.disabled = !pages[currentPage]?.words.some((placed) => selectedWordIds.has(placed.word.id)); }
 }
-preview.addEventListener("pointerup", () => {
-  if (dragWordId === null) return;
-  const wordId = dragWordId; dragWordId = null;
-  if (!didDrag) void regenerateWord(wordId);
+regenerateButton.addEventListener("click", () => void regenerateSelectedWords());
+document.addEventListener("keydown", (event) => {
+  const key = event.key.toLowerCase(); const mod = event.ctrlKey || event.metaKey;
+  const editingText = textArea.contains(document.activeElement);
+  if (mod && key === "z" && !editingText) { event.preventDefault(); if (event.shiftKey) redoDocument(); else undoDocument(); return; }
+  if (mod && key === "y" && !editingText) { event.preventDefault(); redoDocument(); return; }
+  if (event.ctrlKey && key === "r" && selectedWordIds.size && pages.length) { event.preventDefault(); void regenerateSelectedWords(); }
 });
-preview.addEventListener("pointercancel", () => { dragWordId = null; didDrag = false; renderOverlay(); });
+preview.addEventListener("pointerup", () => {
+  resizeState = null; dragState = null;
+});
+preview.addEventListener("pointercancel", () => { dragState = null; resizeState = null; renderOverlay(); });
+document.addEventListener("pointerdown", (event) => {
+  const target = event.target as Node;
+  if (selectedWordIds.size && !preview.contains(target) && !regenerateButton.contains(target)) {
+    selectedWordIds.clear();
+    if (pages.length) renderOverlay();
+  }
+});
 zoomOutButton.addEventListener("click", () => { pageZoom = Math.max(MIN_ZOOM, Math.round((pageZoom - 0.1) * 10) / 10); applyPageZoom(); });
 zoomInButton.addEventListener("click", () => { pageZoom = Math.min(MAX_ZOOM, Math.round((pageZoom + 0.1) * 10) / 10); applyPageZoom(); });
 zoomFitButton.addEventListener("click", () => { pageZoom = 1; applyPageZoom(); paperWrap.scrollTo({ left: 0, top: 0, behavior: "smooth" }); });
