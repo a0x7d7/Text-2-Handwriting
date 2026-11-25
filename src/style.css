@@ -60,9 +60,9 @@ button:disabled { opacity: .48; cursor: not-allowed; box-shadow: none; }
 .page-controls { justify-self: start; }
 .background-switcher { display: flex; align-items: center; justify-self: center; gap: 8px; color: #526270; font-size: 12px; }
 .background-switcher span { min-width: 42px; text-align: center; }
-.background-switcher button { padding: 7px 10px; font-size: 12px; }
 .zoom-controls { justify-self: end; }
-.page-controls button, .zoom-controls button { padding: 7px 10px; font-size: 12px; }
+.page-controls button, .zoom-controls button, .background-switcher button { height: 30px; padding: 0 10px; font-size: 12px; line-height: 1; }
+.zoom-controls button, .background-switcher button { width: 30px; padding: 0; display: grid; place-items: center; }
 #page-number { min-width: 88px; text-align: center; color: #526270; font-size: 12px; font-variant-numeric: tabular-nums; }
 #zoom-level { min-width: 42px; color: #526270; font-size: 12px; text-align: center; font-variant-numeric: tabular-nums; }
 .paper-wrap { position: relative; display: flex; justify-content: center; align-items: flex-start; min-height: 480px; max-height: min(78vh, 1100px); overflow: auto; padding: 10px; border: 1px solid #bfcee0; border-radius: 2px; background: #eaf0f9; }
