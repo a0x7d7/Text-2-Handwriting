@@ -26,6 +26,7 @@ app.innerHTML = `
           <div><label for="word-spacing">Word spacing <output id="word-spacing-value">16 px</output></label><input id="word-spacing" type="range" min="0" max="48" step="1" value="16"></div>
           <div><label for="line-spacing">Line spacing <output id="line-spacing-value">28 px</output></label><input id="line-spacing" type="range" min="0" max="72" step="1" value="28"></div>
           <div><label for="top-spacing">Top spacing <output id="top-spacing-value">70 px</output></label><input id="top-spacing" type="range" min="20" max="180" step="5" value="70"></div>
+          <div><label for="left-spacing">Left spacing <output id="left-spacing-value">112 px</output></label><input id="left-spacing" type="range" min="20" max="220" step="1" value="112"></div>
         </div>
         <div class="text-input-heading"><label for="text">Your text</label><div class="text-format-controls"><button id="size-down" type="button" aria-label="Make selected text smaller" title="Make selected text smaller">A−</button><button id="size-up" type="button" aria-label="Make selected text bigger" title="Make selected text bigger">A+</button></div></div>
         <div id="text" class="text-editor" contenteditable="plaintext-only" role="textbox" aria-label="Your text" aria-multiline="true" spellcheck="false">The quick brown fox jumps over the lazy dog.
@@ -52,9 +53,10 @@ This is a handwriting sample generated with Longhand. Type anything you want in 
         <p id="status" class="status" aria-live="polite"></p>
       </div>
       <div class="preview panel">
-        <div class="preview-head"><span>PAGE PREVIEW</span><div class="background-switcher" aria-label="Page background"><button id="background-prev" type="button" title="Previous background" aria-label="Previous background">←</button><span id="background-name">Blank</span><button id="background-next" type="button" title="Next background" aria-label="Next background">→</button></div><span id="page-info">No pages yet</span></div>
+        <div class="preview-head"><span>PAGE PREVIEW</span><span id="page-info">No pages yet</span></div>
         <div class="page-toolbar">
           <div class="page-controls"><button id="prev-page" disabled>← Previous</button><span id="page-number">Page 0 of 0</span><button id="next-page" disabled>Next →</button></div>
+          <div class="background-switcher" aria-label="Page background"><button id="background-prev" type="button" title="Previous background" aria-label="Previous background">←</button><span id="background-name">Blank</span><button id="background-next" type="button" title="Next background" aria-label="Next background">→</button></div>
           <div class="zoom-controls" aria-label="Page zoom controls"><button id="zoom-out" type="button" title="Zoom out" disabled>−</button><span id="zoom-level">100%</span><button id="zoom-in" type="button" title="Zoom in" disabled>+</button><button id="zoom-fit" type="button" disabled>Fit</button></div>
         </div>
         <div class="paper-wrap" id="paper-wrap">
@@ -80,6 +82,8 @@ const lineSpacing = $("#line-spacing") as HTMLInputElement;
 const lineSpacingValue = $("#line-spacing-value") as HTMLOutputElement;
 const topSpacing = $("#top-spacing") as HTMLInputElement;
 const topSpacingValue = $("#top-spacing-value") as HTMLOutputElement;
+const leftSpacing = $("#left-spacing") as HTMLInputElement;
+const leftSpacingValue = $("#left-spacing-value") as HTMLOutputElement;
 const backgroundPrevButton = $("#background-prev") as HTMLButtonElement;
 const backgroundNextButton = $("#background-next") as HTMLButtonElement;
 const backgroundName = $("#background-name") as HTMLSpanElement;
@@ -110,7 +114,7 @@ const zoomLevel = $("#zoom-level") as HTMLSpanElement;
 interface SpeedWord { id: number; text: string; style: number; width: number; height: number; baseline: number; body: string; paragraphEnd: boolean; localScale: number; postScale: number; offsetX: number; offsetY: number }
 interface PlacedWord { word: SpeedWord; x: number; y: number; width: number; height: number; scale: number }
 interface PageDocument { svg: string; words: PlacedWord[] }
-interface DocumentSnapshot { speedWords: SpeedWord[] | null; pages: PageDocument[]; currentPage: number; selectedWordIds: number[]; textSize: string; wordSpacing: string; lineSpacing: string; topSpacing: string; ink: string; backgroundMode: number }
+interface DocumentSnapshot { speedWords: SpeedWord[] | null; pages: PageDocument[]; currentPage: number; selectedWordIds: number[]; textSize: string; wordSpacing: string; lineSpacing: string; topSpacing: string; leftSpacing: string; ink: string; backgroundMode: number }
 let model: CalligrapherModel | null = null;
 let pages: PageDocument[] = [];
 let speedWords: SpeedWord[] | null = null;
@@ -152,7 +156,7 @@ function captureDocument(): DocumentSnapshot {
   const graph = copyDocumentGraph(speedWords, pages);
   return {
     ...graph, currentPage, selectedWordIds: [...selectedWordIds],
-    textSize: textSize.value, wordSpacing: wordSpacing.value, lineSpacing: lineSpacing.value, topSpacing: topSpacing.value,
+    textSize: textSize.value, wordSpacing: wordSpacing.value, lineSpacing: lineSpacing.value, topSpacing: topSpacing.value, leftSpacing: leftSpacing.value,
     ink: inkSelect.value, backgroundMode,
   };
 }
@@ -166,7 +170,7 @@ function restoreDocument(snapshot: DocumentSnapshot) {
   speedWords = graph.speedWords; pages = graph.pages;
   currentPage = Math.min(snapshot.currentPage, Math.max(0, pages.length - 1));
   selectedWordIds = new Set(snapshot.selectedWordIds);
-  textSize.value = snapshot.textSize; wordSpacing.value = snapshot.wordSpacing; lineSpacing.value = snapshot.lineSpacing; topSpacing.value = snapshot.topSpacing;
+  textSize.value = snapshot.textSize; wordSpacing.value = snapshot.wordSpacing; lineSpacing.value = snapshot.lineSpacing; topSpacing.value = snapshot.topSpacing; leftSpacing.value = snapshot.leftSpacing;
   inkSelect.value = snapshot.ink; lastInk = snapshot.ink;
   backgroundMode = snapshot.backgroundMode; backgroundName.textContent = backgroundMode === 0 ? "Blank" : "Lined";
   speedTextSize = Number(textSize.value) / 100;
@@ -427,8 +431,8 @@ async function recognizeWordImage(image: string): Promise<string> {
   return result.text ?? "";
 }
 function normalizeRecognizedWord(word: string): string { return word.toLocaleLowerCase().replace(/[^a-z0-9]/g, ""); }
-function composeSpeedPages(words: SpeedWord[], size: number, wordGap: number, lineGap: number, topMargin: number): PageDocument[] {
-  const availableW = PAGE_W - MARGIN_X - 60;
+function composeSpeedPages(words: SpeedWord[], size: number, wordGap: number, lineGap: number, topMargin: number, leftMargin: number): PageDocument[] {
+  const availableW = PAGE_W - leftMargin - 60;
   const bottomY = PAGE_H - MARGIN_BOTTOM;
   const rows: Array<{ words: PlacedWord[]; ascent: number; descent: number; height: number }> = [];
   let row: { words: PlacedWord[]; ascent: number; descent: number; height: number } = { words: [], ascent: 0, descent: 0, height: 0 };
@@ -464,7 +468,7 @@ function composeSpeedPages(words: SpeedWord[], size: number, wordGap: number, li
     if (y + lineHeight > bottomY && elements.length) { finishPage(); elements = []; pageWords = []; y = topMargin; }
     for (const placed of line.words) {
       const top = y + line.ascent - placed.word.baseline * placed.scale;
-      placed.x += MARGIN_X; placed.y = top;
+      placed.x += leftMargin; placed.y = top;
       pageWords.push(placed);
       elements.push(wordSvgMarkup(placed));
     }
@@ -569,11 +573,11 @@ function trackRangeHistory(input: HTMLInputElement) {
   input.addEventListener("pointerdown", begin);
   input.addEventListener("keydown", (event) => { if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(event.key)) begin(); });
   input.addEventListener("change", () => {
-    if (before && (before.textSize !== textSize.value || before.wordSpacing !== wordSpacing.value || before.lineSpacing !== lineSpacing.value || before.topSpacing !== topSpacing.value)) pushUndo(before);
+    if (before && (before.textSize !== textSize.value || before.wordSpacing !== wordSpacing.value || before.lineSpacing !== lineSpacing.value || before.topSpacing !== topSpacing.value || before.leftSpacing !== leftSpacing.value)) pushUndo(before);
     before = null;
   });
 }
-trackRangeHistory(textSize); trackRangeHistory(wordSpacing); trackRangeHistory(lineSpacing); trackRangeHistory(topSpacing);
+trackRangeHistory(textSize); trackRangeHistory(wordSpacing); trackRangeHistory(lineSpacing); trackRangeHistory(topSpacing); trackRangeHistory(leftSpacing);
 function adjustSelectedTextSize(amount: number) {
   const selection = window.getSelection();
   if (!selection?.rangeCount || !textArea.contains(selection.anchorNode)) return;
@@ -620,11 +624,12 @@ function updateSpacingOutputs() {
   wordSpacingValue.value = `${wordSpacing.value} px`; wordSpacingValue.textContent = `${wordSpacing.value} px`;
   lineSpacingValue.value = `${lineSpacing.value} px`; lineSpacingValue.textContent = `${lineSpacing.value} px`;
   topSpacingValue.value = `${topSpacing.value} px`; topSpacingValue.textContent = `${topSpacing.value} px`;
+  leftSpacingValue.value = `${leftSpacing.value} px`; leftSpacingValue.textContent = `${leftSpacing.value} px`;
 }
 function reflowSpeedPages() {
   if (!speedWords) return;
   const previousPage = currentPage;
-  pages = composeSpeedPages(speedWords, speedTextSize, Number(wordSpacing.value), Number(lineSpacing.value), Number(topSpacing.value));
+  pages = composeSpeedPages(speedWords, speedTextSize, Number(wordSpacing.value), Number(lineSpacing.value), Number(topSpacing.value), Number(leftSpacing.value));
   const selectedPage = pages.findIndex((page) => page.words.some((placed) => selectedWordIds.has(placed.word.id)));
   currentPage = selectedPage >= 0 ? selectedPage : Math.min(previousPage, pages.length - 1);
   const visibleIds = new Set(pages[currentPage]?.words.map((placed) => placed.word.id) ?? []);
@@ -642,6 +647,7 @@ correctionModeButton.addEventListener("click", () => {
 wordSpacing.addEventListener("input", () => { updateSpacingOutputs(); reflowSpeedPages(); });
 lineSpacing.addEventListener("input", () => { updateSpacingOutputs(); reflowSpeedPages(); });
 topSpacing.addEventListener("input", () => { updateSpacingOutputs(); reflowSpeedPages(); });
+leftSpacing.addEventListener("input", () => { updateSpacingOutputs(); reflowSpeedPages(); });
 function cycleBackground(direction: number) {
   const before = captureDocument();
   backgroundMode = (backgroundMode + direction + 2) % 2;
@@ -659,7 +665,7 @@ generateButton.addEventListener("click", async () => {
   if (!model) return;
   const beforeGeneration = captureDocument();
   generateButton.disabled = true; regenerateButton.disabled = true; downloadButton.disabled = true;
-  pairModeButton.disabled = true; correctionModeButton.disabled = true; wordSpacing.disabled = true; lineSpacing.disabled = true; topSpacing.disabled = true; sizeDownButton.disabled = true; sizeUpButton.disabled = true;
+  pairModeButton.disabled = true; correctionModeButton.disabled = true; wordSpacing.disabled = true; lineSpacing.disabled = true; topSpacing.disabled = true; leftSpacing.disabled = true; sizeDownButton.disabled = true; sizeUpButton.disabled = true;
   generationProgress.hidden = false; progressFill.style.width = "0%"; progressPercent.textContent = "0%";
   setStatus("Starting generation...");
   try {
@@ -667,7 +673,7 @@ generateButton.addEventListener("click", async () => {
     const editor = readEditorText();
     speedWords = await buildSpeedWords(model, editor.text, editor.scales, Number(styleSelect.value), pairMode, correctionMode, report);
     speedTextSize = Number(textSize.value) / 100;
-    pages = composeSpeedPages(speedWords, speedTextSize, Number(wordSpacing.value), Number(lineSpacing.value), Number(topSpacing.value));
+    pages = composeSpeedPages(speedWords, speedTextSize, Number(wordSpacing.value), Number(lineSpacing.value), Number(topSpacing.value), Number(leftSpacing.value));
     pushUndo(beforeGeneration);
     report(100, `Finished · ${pages.length} page${pages.length === 1 ? "" : "s"}`);
     currentPage = 0; selectedWordIds.clear();
@@ -676,7 +682,7 @@ generateButton.addEventListener("click", async () => {
   } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
   finally {
     generateButton.disabled = false; pairModeButton.disabled = false; correctionModeButton.disabled = false;
-    wordSpacing.disabled = false; lineSpacing.disabled = false; topSpacing.disabled = false; sizeDownButton.disabled = false; sizeUpButton.disabled = false;
+    wordSpacing.disabled = false; lineSpacing.disabled = false; topSpacing.disabled = false; leftSpacing.disabled = false; sizeDownButton.disabled = false; sizeUpButton.disabled = false;
     regenerateButton.disabled = !pages[currentPage]?.words.some((placed) => selectedWordIds.has(placed.word.id));
     downloadButton.disabled = pages.length === 0;
   }
