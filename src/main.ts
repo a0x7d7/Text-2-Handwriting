@@ -21,7 +21,7 @@ app.innerHTML = `
     </header>
     <section class="workspace">
       <div class="editor panel">
-        <div class="mode-toolbar"><button id="pair-mode" type="button" aria-pressed="true">Pair mode</button><button id="correction-mode" type="button" aria-pressed="false">Correction mode</button></div>
+        <div class="mode-toolbar"><button id="pair-mode" type="button" aria-pressed="true">Pair mode</button><button id="correction-mode" type="button" aria-pressed="false">Correction mode</button><button id="shadow-mode" type="button" aria-pressed="false">Shadow mode</button></div>
         <div id="speed-settings" class="speed-settings">
           <div><label for="word-spacing">Word spacing <output id="word-spacing-value">16 px</output></label><input id="word-spacing" type="range" min="0" max="48" step="1" value="16"></div>
           <div><label for="line-spacing">Line spacing <output id="line-spacing-value">28 px</output></label><input id="line-spacing" type="range" min="0" max="72" step="1" value="28"></div>
@@ -76,6 +76,7 @@ const styleSelect = $("#style") as HTMLSelectElement;
 const inkSelect = $("#ink") as HTMLSelectElement;
 const correctionModeButton = $("#correction-mode") as HTMLButtonElement;
 const pairModeButton = $("#pair-mode") as HTMLButtonElement;
+const shadowModeButton = $("#shadow-mode") as HTMLButtonElement;
 const wordSpacing = $("#word-spacing") as HTMLInputElement;
 const wordSpacingValue = $("#word-spacing-value") as HTMLOutputElement;
 const lineSpacing = $("#line-spacing") as HTMLInputElement;
@@ -121,6 +122,8 @@ let speedWords: SpeedWord[] | null = null;
 let speedTextSize = 1;
 let correctionMode = false;
 let pairMode = true;
+let shadowMode = false;
+let shadowAngle = 0;
 let backgroundMode = 0;
 let lastInk = inkSelect.value;
 let currentPage = 0;
@@ -483,11 +486,27 @@ function wordSvgMarkup(placed: PlacedWord): string {
   return `<svg x="${placed.x.toFixed(1)}" y="${placed.y.toFixed(1)}" width="${placed.width.toFixed(1)}" height="${placed.height.toFixed(1)}" viewBox="0 0 ${placed.word.width} ${placed.word.height}" overflow="visible">${placed.word.body}</svg>`;
 }
 function recolor(markup: string): string { return markup.replaceAll(BASE_INK, inkSelect.value); }
-const linedBackgroundUrl = new URL("/lined-paper.png", window.location.href).href;
 function pageBackgroundSvg(): string {
   return backgroundMode === 0
     ? `<rect width="100%" height="100%" fill="${PAPER}"/>`
-    : `<image href="${linedBackgroundUrl}" x="0" y="0" width="${PAGE_W}" height="${PAGE_H}" preserveAspectRatio="none"/>`;
+    : (() => {
+      const scale = PAGE_W / 400;
+      const em = 10 * 96 / 72;
+      const rowHeight = em * 1.5 * scale;
+      const ruleHeight = em * 0.05 * scale;
+      const fadeEnd = em * 0.1 * scale;
+      const topMargin = 50 * scale;
+      const leftMargin = 50 * scale;
+      const marginRule = 2 * scale;
+      return `<defs><linearGradient id="lined-rule-fade" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="${rowHeight}"><stop offset="0%" stop-color="#999"/><stop offset="${(100 * ruleHeight / rowHeight).toFixed(3)}%" stop-color="#999"/><stop offset="${(100 * fadeEnd / rowHeight).toFixed(3)}%" stop-color="#999" stop-opacity="0"/><stop offset="100%" stop-color="#999" stop-opacity="0"/></linearGradient><pattern id="lined-paper" x="0" y="${topMargin}" width="${PAGE_W}" height="${rowHeight}" patternUnits="userSpaceOnUse"><rect width="${PAGE_W}" height="${rowHeight}" fill="url(#lined-rule-fade)"/></pattern></defs><rect width="100%" height="100%" fill="#fff"/><rect x="0" y="${topMargin}" width="${PAGE_W}" height="${PAGE_H - topMargin}" fill="url(#lined-paper)"/><rect x="0" y="${topMargin - marginRule / 2}" width="${PAGE_W}" height="${marginRule}" fill="#ffc0cb"/><rect x="${leftMargin - marginRule / 2}" y="0" width="${marginRule}" height="${PAGE_H}" fill="#ffc0cb"/>`;
+    })();
+}
+function shadowGradientSvg(): string {
+  const radians = shadowAngle * Math.PI / 180;
+  const gradientLength = Math.abs(PAGE_W * Math.sin(radians)) + Math.abs(PAGE_H * Math.cos(radians));
+  const dx = Math.sin(radians) * gradientLength / 2; const dy = Math.cos(radians) * gradientLength / 2;
+  const centerX = PAGE_W / 2; const centerY = PAGE_H / 2;
+  return `<defs><linearGradient id="shadow-gradient" gradientUnits="userSpaceOnUse" x1="${(centerX - dx).toFixed(2)}" y1="${(centerY + dy).toFixed(2)}" x2="${(centerX + dx).toFixed(2)}" y2="${(centerY - dy).toFixed(2)}"><stop offset="0" stop-color="#000" stop-opacity="${(0x88 / 0xff).toFixed(6)}"/><stop offset="1" stop-color="#000" stop-opacity="0"/></linearGradient></defs>`;
 }
 function placedVisualBounds(placed: PlacedWord) {
   const rotation = (placed.word.rotation || 0) * Math.PI / 180;
@@ -523,7 +542,9 @@ function serializePage(page: PageDocument, hitTargets = false): string {
   const marquee = hitTargets && marqueeState?.changed
     ? `<rect class="marquee-selection" x="${Math.min(marqueeState.startX, marqueeState.currentX).toFixed(1)}" y="${Math.min(marqueeState.startY, marqueeState.currentY).toFixed(1)}" width="${Math.abs(marqueeState.currentX - marqueeState.startX).toFixed(1)}" height="${Math.abs(marqueeState.currentY - marqueeState.startY).toFixed(1)}"/>`
     : "";
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_W}" height="${PAGE_H}" viewBox="0 0 ${PAGE_W} ${PAGE_H}">${pageBackgroundSvg()}${words}${selection}${marquee}</svg>`;
+  const content = `${pageBackgroundSvg()}${words}${shadowMode ? `<rect width="100%" height="100%" fill="url(#shadow-gradient)"/>` : ""}`;
+  const shadowDefs = shadowMode ? shadowGradientSvg() : "";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_W}" height="${PAGE_H}" viewBox="0 0 ${PAGE_W} ${PAGE_H}">${shadowDefs}${content}${selection}${marquee}</svg>`;
 }
 function renderOverlay() {
   const page = pages[currentPage];
@@ -660,6 +681,12 @@ correctionModeButton.addEventListener("click", () => {
   correctionMode = !correctionMode;
   correctionModeButton.setAttribute("aria-pressed", String(correctionMode));
 });
+shadowModeButton.addEventListener("click", () => {
+  shadowMode = !shadowMode;
+  if (shadowMode) shadowAngle = Math.random() * 360;
+  shadowModeButton.setAttribute("aria-pressed", String(shadowMode));
+  if (pages.length) renderCurrentPage();
+});
 wordSpacing.addEventListener("input", () => { updateSpacingOutputs(); reflowSpeedPages(); });
 lineSpacing.addEventListener("input", () => { updateSpacingOutputs(); reflowSpeedPages(); });
 topSpacing.addEventListener("input", () => { updateSpacingOutputs(); reflowSpeedPages(); });
@@ -681,7 +708,7 @@ generateButton.addEventListener("click", async () => {
   if (!model) return;
   const beforeGeneration = captureDocument();
   generateButton.disabled = true; regenerateButton.disabled = true; downloadButton.disabled = true;
-  pairModeButton.disabled = true; correctionModeButton.disabled = true; wordSpacing.disabled = true; lineSpacing.disabled = true; topSpacing.disabled = true; leftSpacing.disabled = true; sizeDownButton.disabled = true; sizeUpButton.disabled = true;
+  pairModeButton.disabled = true; correctionModeButton.disabled = true; shadowModeButton.disabled = true; wordSpacing.disabled = true; lineSpacing.disabled = true; topSpacing.disabled = true; leftSpacing.disabled = true; sizeDownButton.disabled = true; sizeUpButton.disabled = true;
   generationProgress.hidden = false; progressFill.style.width = "0%"; progressPercent.textContent = "0%";
   setStatus("Starting generation...");
   try {
@@ -690,6 +717,7 @@ generateButton.addEventListener("click", async () => {
     speedWords = await buildSpeedWords(model, editor.text, editor.scales, Number(styleSelect.value), pairMode, correctionMode, report);
     speedTextSize = Number(textSize.value) / 100;
     pages = composeSpeedPages(speedWords, speedTextSize, Number(wordSpacing.value), Number(lineSpacing.value), Number(topSpacing.value), Number(leftSpacing.value));
+    if (shadowMode) shadowAngle = Math.random() * 360;
     pushUndo(beforeGeneration);
     report(100, `Finished · ${pages.length} page${pages.length === 1 ? "" : "s"}`);
     currentPage = 0; selectedWordIds.clear();
@@ -697,7 +725,7 @@ generateButton.addEventListener("click", async () => {
     setStatus("");
   } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
   finally {
-    generateButton.disabled = false; pairModeButton.disabled = false; correctionModeButton.disabled = false;
+    generateButton.disabled = false; pairModeButton.disabled = false; correctionModeButton.disabled = false; shadowModeButton.disabled = false;
     wordSpacing.disabled = false; lineSpacing.disabled = false; topSpacing.disabled = false; leftSpacing.disabled = false; sizeDownButton.disabled = false; sizeUpButton.disabled = false;
     regenerateButton.disabled = !pages[currentPage]?.words.some((placed) => selectedWordIds.has(placed.word.id));
     downloadButton.disabled = pages.length === 0;
