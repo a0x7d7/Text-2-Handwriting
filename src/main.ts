@@ -128,6 +128,7 @@ let selectedWordIds = new Set<number>();
 let dragState: { startX: number; startY: number; items: Array<{ id: number; offsetX: number; offsetY: number }>; before: DocumentSnapshot; changed: boolean } | null = null;
 let resizeState: { handle: string; startX: number; startY: number; bounds: { left: number; top: number; right: number; bottom: number }; items: Array<{ id: number; left: number; top: number; width: number; height: number; scale: number; postScale: number }>; before: DocumentSnapshot; changed: boolean } | null = null;
 let rotationState: { centerX: number; centerY: number; startAngle: number; items: Array<{ id: number; left: number; top: number; width: number; height: number; rotation: number }>; before: DocumentSnapshot; changed: boolean } | null = null;
+let marqueeState: { startX: number; startY: number; currentX: number; currentY: number; additive: boolean; baseSelection: number[]; changed: boolean } | null = null;
 let nextWordId = 1;
 const undoStack: DocumentSnapshot[] = [];
 const redoStack: DocumentSnapshot[] = [];
@@ -519,7 +520,10 @@ function serializePage(page: PageDocument, hitTargets = false): string {
     const handle = (name: string, x: number, y: number) => `<rect class="resize-handle" data-resize-handle="${name}" x="${(x - 4).toFixed(1)}" y="${(y - 4).toFixed(1)}" width="8" height="8" rx="2"/>`;
     return `${wordBoxes}<rect class="word-selection" x="${left.toFixed(1)}" y="${top.toFixed(1)}" width="${(right - left).toFixed(1)}" height="${(bottom - top).toFixed(1)}"/>${handle("nw", left, top)}${handle("ne", right, top)}${handle("sw", left, bottom)}<circle class="rotate-handle" data-rotate-handle="true" cx="${right.toFixed(1)}" cy="${bottom.toFixed(1)}" r="5"><title>Drag to rotate</title></circle>`;
   })() : "";
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_W}" height="${PAGE_H}" viewBox="0 0 ${PAGE_W} ${PAGE_H}">${pageBackgroundSvg()}${words}${selection}</svg>`;
+  const marquee = hitTargets && marqueeState?.changed
+    ? `<rect class="marquee-selection" x="${Math.min(marqueeState.startX, marqueeState.currentX).toFixed(1)}" y="${Math.min(marqueeState.startY, marqueeState.currentY).toFixed(1)}" width="${Math.abs(marqueeState.currentX - marqueeState.startX).toFixed(1)}" height="${Math.abs(marqueeState.currentY - marqueeState.startY).toFixed(1)}"/>`
+    : "";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_W}" height="${PAGE_H}" viewBox="0 0 ${PAGE_W} ${PAGE_H}">${pageBackgroundSvg()}${words}${selection}${marquee}</svg>`;
 }
 function renderOverlay() {
   const page = pages[currentPage];
@@ -705,8 +709,11 @@ preview.addEventListener("pointerdown", (event) => {
   const rotateHandle = (event.target as Element).closest<SVGCircleElement>("[data-rotate-handle]");
   const resizeHandle = (event.target as Element).closest<SVGRectElement>("[data-resize-handle]");
   const target = (event.target as Element).closest<SVGGElement>("[data-word-id]");
-  if (!rotateHandle && !resizeHandle && !target) { selectedWordIds.clear(); renderOverlay(); return; }
   const point = svgPoint(event);
+  if (!rotateHandle && !resizeHandle && !target) {
+    marqueeState = { startX: point.x, startY: point.y, currentX: point.x, currentY: point.y, additive: event.shiftKey, baseSelection: event.shiftKey ? [...selectedWordIds] : [], changed: false };
+    preview.setPointerCapture(event.pointerId); event.preventDefault(); return;
+  }
   if (rotateHandle) {
     const selected = pages[currentPage]?.words.filter((placed) => selectedWordIds.has(placed.word.id)) ?? [];
     if (!selected.length) return;
@@ -742,6 +749,20 @@ preview.addEventListener("pointerdown", (event) => {
   preview.setPointerCapture(event.pointerId); event.preventDefault(); renderOverlay();
 });
 preview.addEventListener("pointermove", (event) => {
+  if (marqueeState) {
+    const point = svgPoint(event);
+    marqueeState.currentX = point.x; marqueeState.currentY = point.y;
+    if (Math.hypot(point.x - marqueeState.startX, point.y - marqueeState.startY) > 3) marqueeState.changed = true;
+    if (!marqueeState.changed) return;
+    const left = Math.min(marqueeState.startX, point.x); const right = Math.max(marqueeState.startX, point.x);
+    const top = Math.min(marqueeState.startY, point.y); const bottom = Math.max(marqueeState.startY, point.y);
+    selectedWordIds = new Set(marqueeState.baseSelection);
+    for (const placed of pages[currentPage]?.words ?? []) {
+      const bounds = placedVisualBounds(placed);
+      if (bounds.left <= right && bounds.right >= left && bounds.top <= bottom && bounds.bottom >= top) selectedWordIds.add(placed.word.id);
+    }
+    renderOverlay(); return;
+  }
   if (rotationState) {
     const point = svgPoint(event);
     const angle = Math.atan2(point.y - rotationState.centerY, point.x - rotationState.centerX);
@@ -825,9 +846,13 @@ document.addEventListener("keydown", (event) => {
   if (event.ctrlKey && key === "r" && selectedWordIds.size && pages.length) { event.preventDefault(); void regenerateSelectedWords(); }
 });
 preview.addEventListener("pointerup", () => {
+  if (marqueeState) {
+    if (!marqueeState.changed && !marqueeState.additive) selectedWordIds.clear();
+    marqueeState = null; renderOverlay();
+  }
   rotationState = null; resizeState = null; dragState = null;
 });
-preview.addEventListener("pointercancel", () => { dragState = null; resizeState = null; rotationState = null; renderOverlay(); });
+preview.addEventListener("pointercancel", () => { dragState = null; resizeState = null; rotationState = null; marqueeState = null; renderOverlay(); });
 document.addEventListener("pointerdown", (event) => {
   const target = event.target as Node;
   const clickedInsidePreview = event.composedPath().includes(preview);

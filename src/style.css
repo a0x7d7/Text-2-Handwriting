@@ -72,6 +72,7 @@ button:disabled { opacity: .48; cursor: not-allowed; box-shadow: none; }
 .page-stage .word-hit { pointer-events: all; cursor: grab; }
 .page-stage .word-hit:active { cursor: grabbing; }
 .page-stage .selected-word, .page-stage .word-selection { fill: none; stroke: #526b9d; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
+.page-stage .marquee-selection { fill: #526b9d18; stroke: #526b9d; stroke-width: 1; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; pointer-events: none; }
 .page-stage .resize-handle { fill: #fffef8; stroke: #526b9d; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: all; }
 .page-stage .rotate-handle { fill: #526b9d; stroke: #fffef8; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: all; cursor: grab; }
 .page-stage .rotate-handle:active { cursor: grabbing; }
