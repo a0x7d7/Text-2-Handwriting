@@ -73,6 +73,8 @@ button:disabled { opacity: .48; cursor: not-allowed; box-shadow: none; }
 .page-stage .word-hit:active { cursor: grabbing; }
 .page-stage .selected-word, .page-stage .word-selection { fill: none; stroke: #526b9d; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
 .page-stage .resize-handle { fill: #fffef8; stroke: #526b9d; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: all; }
+.page-stage .rotate-handle { fill: #526b9d; stroke: #fffef8; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: all; cursor: grab; }
+.page-stage .rotate-handle:active { cursor: grabbing; }
 .page-stage .resize-handle[data-resize-handle="nw"], .page-stage .resize-handle[data-resize-handle="se"] { cursor: nwse-resize; }
 .page-stage .resize-handle[data-resize-handle="ne"], .page-stage .resize-handle[data-resize-handle="sw"] { cursor: nesw-resize; }
 .placeholder { position: absolute; top: 45%; padding: 0 20px; color: #708092; font-size: 13px; text-align: center; }

@@ -111,7 +111,7 @@ const zoomInButton = $("#zoom-in") as HTMLButtonElement;
 const zoomFitButton = $("#zoom-fit") as HTMLButtonElement;
 const zoomLevel = $("#zoom-level") as HTMLSpanElement;
 
-interface SpeedWord { id: number; text: string; style: number; width: number; height: number; baseline: number; body: string; paragraphEnd: boolean; localScale: number; postScale: number; offsetX: number; offsetY: number }
+interface SpeedWord { id: number; text: string; style: number; width: number; height: number; baseline: number; body: string; paragraphEnd: boolean; localScale: number; postScale: number; offsetX: number; offsetY: number; rotation: number }
 interface PlacedWord { word: SpeedWord; x: number; y: number; width: number; height: number; scale: number }
 interface PageDocument { svg: string; words: PlacedWord[] }
 interface DocumentSnapshot { speedWords: SpeedWord[] | null; pages: PageDocument[]; currentPage: number; selectedWordIds: number[]; textSize: string; wordSpacing: string; lineSpacing: string; topSpacing: string; leftSpacing: string; ink: string; backgroundMode: number }
@@ -127,6 +127,7 @@ let currentPage = 0;
 let selectedWordIds = new Set<number>();
 let dragState: { startX: number; startY: number; items: Array<{ id: number; offsetX: number; offsetY: number }>; before: DocumentSnapshot; changed: boolean } | null = null;
 let resizeState: { handle: string; startX: number; startY: number; bounds: { left: number; top: number; right: number; bottom: number }; items: Array<{ id: number; left: number; top: number; width: number; height: number; scale: number; postScale: number }>; before: DocumentSnapshot; changed: boolean } | null = null;
+let rotationState: { centerX: number; centerY: number; startAngle: number; items: Array<{ id: number; left: number; top: number; width: number; height: number; rotation: number }>; before: DocumentSnapshot; changed: boolean } | null = null;
 let nextWordId = 1;
 const undoStack: DocumentSnapshot[] = [];
 const redoStack: DocumentSnapshot[] = [];
@@ -403,7 +404,7 @@ async function buildSpeedWords(
     }
     output.push({
       id: nextWordId++, text: token.text, style, width: layout.width, height: layout.height, baseline, body: layout.body,
-      paragraphEnd: token.paragraphEnd, localScale: token.localScale, postScale: 1, offsetX: 0, offsetY: 0,
+      paragraphEnd: token.paragraphEnd, localScale: token.localScale, postScale: 1, offsetX: 0, offsetY: 0, rotation: 0,
     });
     completed++;
     onProgress(Math.round(completed / total * 88), `${correctWords ? "Checking" : "Drawing"} word groups · ${completed} of ${total}`);
@@ -487,6 +488,14 @@ function pageBackgroundSvg(): string {
     ? `<rect width="100%" height="100%" fill="${PAPER}"/>`
     : `<image href="${linedBackgroundUrl}" x="0" y="0" width="${PAGE_W}" height="${PAGE_H}" preserveAspectRatio="none"/>`;
 }
+function placedVisualBounds(placed: PlacedWord) {
+  const rotation = (placed.word.rotation || 0) * Math.PI / 180;
+  const width = Math.abs(placed.width * Math.cos(rotation)) + Math.abs(placed.height * Math.sin(rotation));
+  const height = Math.abs(placed.width * Math.sin(rotation)) + Math.abs(placed.height * Math.cos(rotation));
+  const centerX = placed.x + placed.word.offsetX + placed.width / 2;
+  const centerY = placed.y + placed.word.offsetY + placed.height / 2;
+  return { left: centerX - width / 2, top: centerY - height / 2, right: centerX + width / 2, bottom: centerY + height / 2 };
+}
 function svgPoint(event: PointerEvent) {
   const rect = preview.getBoundingClientRect();
   return { x: Math.max(0, Math.min(PAGE_W, (event.clientX - rect.left) * PAGE_W / rect.width)), y: Math.max(0, Math.min(PAGE_H, (event.clientY - rect.top) * PAGE_H / rect.height)) };
@@ -494,18 +503,21 @@ function svgPoint(event: PointerEvent) {
 function serializePage(page: PageDocument, hitTargets = false): string {
   const words = page.words.map((placed) => {
     const { word } = placed; const x = placed.x + word.offsetX; const y = placed.y + word.offsetY;
+    const centerX = x + placed.width / 2; const centerY = y + placed.height / 2;
+    const rotation = word.rotation || 0;
+    const transform = rotation ? ` transform="rotate(${rotation.toFixed(2)} ${centerX.toFixed(1)} ${centerY.toFixed(1)})"` : "";
     const ink = `<svg x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${placed.width.toFixed(1)}" height="${placed.height.toFixed(1)}" viewBox="0 0 ${word.width} ${word.height}" overflow="visible">${word.body}</svg>`;
     const hit = hitTargets ? `<rect class="word-hit" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${placed.width.toFixed(1)}" height="${placed.height.toFixed(1)}" fill="transparent"/>` : "";
-    return `<g${hitTargets ? ` data-word-id="${word.id}"` : ""}>${ink}${hit}</g>`;
+    return `<g${hitTargets ? ` data-word-id="${word.id}"` : ""}${transform}>${ink}${hit}</g>`;
   }).join("");
   const selected = hitTargets ? page.words.filter((placed) => selectedWordIds.has(placed.word.id)) : [];
   const selection = selected.length ? (() => {
-    const boxes = selected.map((placed) => ({ left: placed.x + placed.word.offsetX, top: placed.y + placed.word.offsetY, right: placed.x + placed.word.offsetX + placed.width, bottom: placed.y + placed.word.offsetY + placed.height }));
+    const boxes = selected.map(placedVisualBounds);
     const left = Math.min(...boxes.map((box) => box.left)); const top = Math.min(...boxes.map((box) => box.top));
     const right = Math.max(...boxes.map((box) => box.right)); const bottom = Math.max(...boxes.map((box) => box.bottom));
-    const wordBoxes = selected.map((placed) => `<rect class="selected-word" x="${(placed.x + placed.word.offsetX).toFixed(1)}" y="${(placed.y + placed.word.offsetY).toFixed(1)}" width="${placed.width.toFixed(1)}" height="${placed.height.toFixed(1)}"/>`).join("");
+    const wordBoxes = boxes.map((box) => `<rect class="selected-word" x="${box.left.toFixed(1)}" y="${box.top.toFixed(1)}" width="${(box.right - box.left).toFixed(1)}" height="${(box.bottom - box.top).toFixed(1)}"/>`).join("");
     const handle = (name: string, x: number, y: number) => `<rect class="resize-handle" data-resize-handle="${name}" x="${(x - 4).toFixed(1)}" y="${(y - 4).toFixed(1)}" width="8" height="8" rx="2"/>`;
-    return `${wordBoxes}<rect class="word-selection" x="${left.toFixed(1)}" y="${top.toFixed(1)}" width="${(right - left).toFixed(1)}" height="${(bottom - top).toFixed(1)}"/>${handle("nw", left, top)}${handle("ne", right, top)}${handle("sw", left, bottom)}${handle("se", right, bottom)}`;
+    return `${wordBoxes}<rect class="word-selection" x="${left.toFixed(1)}" y="${top.toFixed(1)}" width="${(right - left).toFixed(1)}" height="${(bottom - top).toFixed(1)}"/>${handle("nw", left, top)}${handle("ne", right, top)}${handle("sw", left, bottom)}<circle class="rotate-handle" data-rotate-handle="true" cx="${right.toFixed(1)}" cy="${bottom.toFixed(1)}" r="5"><title>Drag to rotate</title></circle>`;
   })() : "";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_W}" height="${PAGE_H}" viewBox="0 0 ${PAGE_W} ${PAGE_H}">${pageBackgroundSvg()}${words}${selection}</svg>`;
 }
@@ -690,10 +702,24 @@ generateButton.addEventListener("click", async () => {
 prevButton.addEventListener("click", () => { if (currentPage > 0) { currentPage--; selectedWordIds.clear(); renderCurrentPage(); } });
 nextButton.addEventListener("click", () => { if (currentPage < pages.length - 1) { currentPage++; selectedWordIds.clear(); renderCurrentPage(); } });
 preview.addEventListener("pointerdown", (event) => {
+  const rotateHandle = (event.target as Element).closest<SVGCircleElement>("[data-rotate-handle]");
   const resizeHandle = (event.target as Element).closest<SVGRectElement>("[data-resize-handle]");
   const target = (event.target as Element).closest<SVGGElement>("[data-word-id]");
-  if (!resizeHandle && !target) { selectedWordIds.clear(); renderOverlay(); return; }
+  if (!rotateHandle && !resizeHandle && !target) { selectedWordIds.clear(); renderOverlay(); return; }
   const point = svgPoint(event);
+  if (rotateHandle) {
+    const selected = pages[currentPage]?.words.filter((placed) => selectedWordIds.has(placed.word.id)) ?? [];
+    if (!selected.length) return;
+    const bounds = selected.map(placedVisualBounds);
+    const centerX = (Math.min(...bounds.map((box) => box.left)) + Math.max(...bounds.map((box) => box.right))) / 2;
+    const centerY = (Math.min(...bounds.map((box) => box.top)) + Math.max(...bounds.map((box) => box.bottom))) / 2;
+    rotationState = {
+      centerX, centerY, startAngle: Math.atan2(point.y - centerY, point.x - centerX),
+      items: selected.map((placed) => ({ id: placed.word.id, left: placed.x + placed.word.offsetX, top: placed.y + placed.word.offsetY, width: placed.width, height: placed.height, rotation: placed.word.rotation || 0 })),
+      before: captureDocument(), changed: false,
+    };
+    preview.setPointerCapture(event.pointerId); event.preventDefault(); return;
+  }
   if (resizeHandle) {
     const selected = pages[currentPage]?.words.filter((placed) => selectedWordIds.has(placed.word.id)) ?? [];
     if (!selected.length) return;
@@ -716,6 +742,26 @@ preview.addEventListener("pointerdown", (event) => {
   preview.setPointerCapture(event.pointerId); event.preventDefault(); renderOverlay();
 });
 preview.addEventListener("pointermove", (event) => {
+  if (rotationState) {
+    const point = svgPoint(event);
+    const angle = Math.atan2(point.y - rotationState.centerY, point.x - rotationState.centerX);
+    const delta = Math.atan2(Math.sin(angle - rotationState.startAngle), Math.cos(angle - rotationState.startAngle));
+    if (Math.abs(delta) <= Math.PI / 180) return;
+    if (!rotationState.changed) { pushUndo(rotationState.before); rotationState.changed = true; }
+    const cos = Math.cos(delta); const sin = Math.sin(delta);
+    for (const item of rotationState.items) {
+      const placed = pages[currentPage]?.words.find((current) => current.word.id === item.id);
+      if (!placed) continue;
+      const itemCenterX = item.left + item.width / 2; const itemCenterY = item.top + item.height / 2;
+      const relativeX = itemCenterX - rotationState.centerX; const relativeY = itemCenterY - rotationState.centerY;
+      const nextCenterX = rotationState.centerX + relativeX * cos - relativeY * sin;
+      const nextCenterY = rotationState.centerY + relativeX * sin + relativeY * cos;
+      placed.word.offsetX = nextCenterX - item.width / 2 - placed.x;
+      placed.word.offsetY = nextCenterY - item.height / 2 - placed.y;
+      placed.word.rotation = item.rotation + delta * 180 / Math.PI;
+    }
+    renderOverlay(); return;
+  }
   if (resizeState) {
     const point = svgPoint(event); const dx = point.x - resizeState.startX; const dy = point.y - resizeState.startY;
     if (Math.hypot(dx, dy) <= 2) return;
@@ -779,9 +825,9 @@ document.addEventListener("keydown", (event) => {
   if (event.ctrlKey && key === "r" && selectedWordIds.size && pages.length) { event.preventDefault(); void regenerateSelectedWords(); }
 });
 preview.addEventListener("pointerup", () => {
-  resizeState = null; dragState = null;
+  rotationState = null; resizeState = null; dragState = null;
 });
-preview.addEventListener("pointercancel", () => { dragState = null; resizeState = null; renderOverlay(); });
+preview.addEventListener("pointercancel", () => { dragState = null; resizeState = null; rotationState = null; renderOverlay(); });
 document.addEventListener("pointerdown", (event) => {
   const target = event.target as Node;
   const clickedInsidePreview = event.composedPath().includes(preview);
